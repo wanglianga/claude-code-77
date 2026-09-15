@@ -416,7 +416,7 @@
               </el-table-column>
               <el-table-column label="操作">
                 <template #default="{ row }">
-                  <template v-if="row.status === 'SENT' && event.status !== 'CLOSED' && can('notify')">
+                  <template v-if="row.status === 'SENT' && event.status !== 'CLOSED' && canAckNotification(row)">
                     <el-button size="small" link type="success" @click="doNotify(row.id, 'ACKED')">确认</el-button>
                     <el-button size="small" link type="danger" @click="doNotify(row.id, 'UNREACHABLE')">联系不上</el-button>
                   </template>
@@ -498,18 +498,18 @@ import { fmtTime, rescueMinutes, elapsedMinutes } from '../utils/format'
 
 const STATUS_ORDER = ['PENDING', 'DISPATCHED', 'ARRIVED', 'RELEASED', 'RESET', 'CLOSED']
 
-// 与后端一致的操作权限矩阵
+// 与后端 EventService 一致的操作权限矩阵
 const ROLE_PERMS = {
   dispatch: ['ADMIN', 'DUTY'],
   arrive: ['ADMIN', 'DUTY', 'MAINTENANCE', 'FIRE'],
   release: ['ADMIN', 'DUTY', 'MAINTENANCE'],
   reset: ['ADMIN', 'DUTY', 'MAINTENANCE'],
   close: ['ADMIN', 'DUTY'],
-  calls: ['ADMIN', 'DUTY', 'MAINTENANCE', 'BUTLER'],
+  calls: ['ADMIN', 'DUTY', 'MAINTENANCE', 'BUTLER', 'FIRE'],
   flags: ['ADMIN', 'DUTY', 'MAINTENANCE'],
-  notify: ['ADMIN', 'DUTY', 'MAINTENANCE', 'BUTLER'],
+  notify: ['ADMIN', 'DUTY', 'MAINTENANCE', 'BUTLER', 'SECURITY', 'FIRE'],
   followup: ['ADMIN', 'DUTY', 'BUTLER'],
-  rectify: ['ADMIN', 'DUTY']
+  rectify: ['ADMIN', 'DUTY', 'MAINTENANCE']
 }
 
 const route = useRoute()
@@ -534,6 +534,16 @@ const arriveParties = computed(() => {
 
 function can(action) {
   return ROLE_PERMS[action]?.includes(auth.user?.role)
+}
+
+/**
+ * 通知确认权限：值班员/管理员可确认全部通知；
+ * 维保/管家/保安/消防仅可确认本岗位收到的通知（后端仍强制校验目标角色与维保单位/楼栋范围）。
+ */
+function canAckNotification(notification) {
+  const role = auth.user?.role
+  if (['ADMIN', 'DUTY'].includes(role)) return true
+  return can('notify') && notification.targetRole === role
 }
 
 /** 高风险场景：含老人/儿童或通话中断（无法接通/时断时续） → 必须通知消防（与后端口径一致） */
