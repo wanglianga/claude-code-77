@@ -1,7 +1,11 @@
 package com.elevator.rescue.controller;
 
+import com.elevator.rescue.dto.PlanDetail;
+import com.elevator.rescue.dto.PlanView;
 import com.elevator.rescue.entity.ElderlyAssistance;
+import com.elevator.rescue.entity.RecheckRecord;
 import com.elevator.rescue.entity.RectificationPlan;
+import com.elevator.rescue.entity.RectificationPlanVersion;
 import com.elevator.rescue.security.AuthHelper;
 import com.elevator.rescue.service.RectificationService;
 import jakarta.validation.Valid;
@@ -63,32 +67,48 @@ public class RectificationController {
         return rectificationService.faultSummary(id, authHelper.requireUser(auth));
     }
 
-    // ---------- 整改方案 ----------
+    // ---------- 整改申请与方案版本 ----------
 
     @GetMapping("/rectification-plans")
-    public List<RectificationPlan> listPlans(Authentication auth) {
+    public List<PlanView> listPlans(Authentication auth) {
         return rectificationService.listPlans(authHelper.requireUser(auth));
     }
 
+    @GetMapping("/rectification-plans/{id}")
+    public PlanDetail planDetail(@PathVariable Long id, Authentication auth) {
+        return rectificationService.planDetail(id, authHelper.requireUser(auth));
+    }
+
+    @GetMapping("/rectification-plans/{id}/recheck-records")
+    public List<RecheckRecord> recheckRecords(@PathVariable Long id, Authentication auth) {
+        return rectificationService.recheckRecords(id, authHelper.requireUser(auth));
+    }
+
     @GetMapping("/elevators/{id}/rectification-plans")
-    public List<RectificationPlan> plansOf(@PathVariable Long id, Authentication auth) {
+    public List<PlanView> plansOf(@PathVariable Long id, Authentication auth) {
         return rectificationService.plansOf(id, authHelper.requireUser(auth));
     }
 
+    /** 发起停梯整改申请：事务内重新核验同一电梯一周内困人事件达到阈值，并固化证据快照 */
     @PostMapping("/elevators/{id}/rectification-plans")
     public RectificationPlan requestPlan(@PathVariable Long id, @RequestBody PlanRequestDto req, Authentication auth) {
         return rectificationService.requestPlan(id, req.eventId(), req.requestNote(), authHelper.requireUser(auth));
     }
 
-    @PutMapping("/rectification-plans/{id}/submit")
-    public RectificationPlan submitPlan(@PathVariable Long id, @Valid @RequestBody PlanSubmitDto req, Authentication auth) {
-        return rectificationService.submitPlan(id, req.parts(), req.expectedArrival(), req.recheckInspector(),
+    /** 提交整改方案：每次提交生成新版本行，历史版本（含复检未通过版本）不可覆盖 */
+    @PostMapping("/rectification-plans/{id}/versions")
+    public RectificationPlanVersion submitVersion(@PathVariable Long id, @Valid @RequestBody PlanSubmitDto req,
+                                                  Authentication auth) {
+        return rectificationService.submitVersion(id, req.parts(), req.expectedArrival(), req.recheckInspector(),
                 req.noticePublishTime(), req.planDetail(), authHelper.requireUser(auth));
     }
 
-    @PutMapping("/rectification-plans/{id}/recheck")
-    public RectificationPlan recheck(@PathVariable Long id, @Valid @RequestBody RecheckDto req, Authentication auth) {
-        return rectificationService.recheck(id, Boolean.TRUE.equals(req.pass()), req.result(), authHelper.requireUser(auth));
+    /** 复检登记：仅允许对最新版本登记一次，生成不可变复检记录；仅最新版通过才恢复运行并发布复检公告 */
+    @PostMapping("/rectification-versions/{versionId}/recheck")
+    public RectificationPlanVersion recheck(@PathVariable Long versionId, @Valid @RequestBody RecheckDto req,
+                                            Authentication auth) {
+        return rectificationService.recheck(versionId, Boolean.TRUE.equals(req.pass()), req.result(),
+                authHelper.requireUser(auth));
     }
 
     // ---------- 老人帮扶 ----------

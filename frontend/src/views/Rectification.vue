@@ -40,49 +40,65 @@
       </el-row>
     </el-card>
 
-    <!-- 整改方案 -->
+    <!-- 整改申请与方案版本 -->
     <el-card class="panel-card" shadow="never" style="margin-bottom: 16px">
       <template #header>
-        <span>整改方案（未复检通过前电梯保持停用）</span>
+        <span>停梯整改申请与方案版本（未复检通过前电梯保持停用；历史版本与复检记录不可更改）</span>
       </template>
       <el-table :data="plans" v-loading="loading">
-        <el-table-column label="电梯" width="100">
-          <template #default="{ row }"><span class="mono">{{ row.elevator?.code }}</span></template>
+        <el-table-column label="电梯" width="90">
+          <template #default="{ row }"><span class="mono">{{ row.plan?.elevator?.code }}</span></template>
         </el-table-column>
         <el-table-column label="楼栋" width="120">
-          <template #default="{ row }">{{ row.elevator?.building?.name }}</template>
+          <template #default="{ row }">{{ row.plan?.elevator?.building?.name }}</template>
         </el-table-column>
-        <el-table-column prop="companyName" label="维保单位" min-width="150" show-overflow-tooltip />
-        <el-table-column label="状态" width="110">
+        <el-table-column label="维保单位" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.plan?.companyName }}</template>
+        </el-table-column>
+        <el-table-column label="申请状态" width="105">
           <template #default="{ row }">
-            <el-tag :type="PLAN_STATUS[row.status]?.type" size="small">{{ PLAN_STATUS[row.status]?.label }}</el-tag>
+            <el-tag :type="PLAN_STATUS[row.plan?.status]?.type" size="small">{{ PLAN_STATUS[row.plan?.status]?.label }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="parts" label="配件" min-width="140" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.parts || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="expectedArrival" label="预计到货" width="100">
-          <template #default="{ row }">{{ row.expectedArrival || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="recheckInspector" label="复检人" width="150">
-          <template #default="{ row }">{{ row.recheckInspector || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="公告发布" width="130">
-          <template #default="{ row }">{{ row.noticePublishTime ? fmtTime(row.noticePublishTime) : '—' }}</template>
-        </el-table-column>
-        <el-table-column label="要求/提交" width="160">
+        <el-table-column label="方案版本" width="100">
           <template #default="{ row }">
-            <div style="font-size: 12px">{{ row.requestedBy }} ｜ {{ fmtTime(row.requestedAt, 'MM-DD HH:mm') }}</div>
-            <div v-if="row.submittedBy" style="font-size: 12px; color: #8a94a8">{{ row.submittedBy }} ｜ {{ fmtTime(row.submittedAt, 'MM-DD HH:mm') }}</div>
+            <el-tag v-if="row.latestVersion" size="small" effect="plain" :type="VERSION_STATUS[row.latestVersion.status]?.type">
+              第 {{ row.latestVersion.versionNo }} 版
+            </el-tag>
+            <span v-else style="color: #8a94a8">未提交</span>
+            <span v-if="row.versionCount > 1" style="font-size: 12px; color: #8a94a8">（共 {{ row.versionCount }} 版）</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="配件" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.latestVersion?.parts || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="预计到货" width="96">
+          <template #default="{ row }">{{ row.latestVersion?.expectedArrival || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="复检人" width="140">
+          <template #default="{ row }">{{ row.latestVersion?.recheckInspector || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="公告发布" width="125">
+          <template #default="{ row }">{{ row.latestVersion?.noticePublishTime ? fmtTime(row.latestVersion.noticePublishTime) : '—' }}</template>
+        </el-table-column>
+        <el-table-column label="申请 / 最新提交" width="160">
           <template #default="{ row }">
-            <el-button v-if="['REQUESTED', 'RECHECK_FAILED'].includes(row.status) && canSubmit"
-              size="small" type="primary" link @click="openSubmit(row)">提交方案</el-button>
-            <el-button v-if="row.status === 'SUBMITTED' && canRecheck"
+            <div style="font-size: 12px">{{ row.plan?.requestedBy }} ｜ {{ fmtTime(row.plan?.requestedAt, 'MM-DD HH:mm') }}</div>
+            <div v-if="row.latestVersion?.submittedBy" style="font-size: 12px; color: #8a94a8">
+              {{ row.latestVersion.submittedBy }} ｜ {{ fmtTime(row.latestVersion.submittedAt, 'MM-DD HH:mm') }}
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="['REQUESTED', 'RECHECK_FAILED'].includes(row.plan?.status) && canSubmit"
+              size="small" type="primary" link @click="openSubmit(row)">
+              {{ row.plan?.status === 'RECHECK_FAILED' ? '提交修订版' : '提交方案' }}
+            </el-button>
+            <el-button v-if="row.plan?.status === 'SUBMITTED' && row.latestVersion && canRecheck"
               size="small" type="success" link @click="openRecheck(row)">复检登记</el-button>
-            <el-button size="small" link @click="openSummary(row.elevator)">汇总</el-button>
+            <el-button size="small" link @click="openHistory(row)">版本历史</el-button>
+            <el-button size="small" link @click="openSummary(row.plan.elevator)">汇总</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -185,9 +201,9 @@
     </el-dialog>
 
     <!-- 要求整改对话框 -->
-    <el-dialog v-model="requestDialog" :title="`要求提交整改方案：${requestElevator?.code || ''}`" width="520px">
+    <el-dialog v-model="requestDialog" :title="`发起停梯整改申请：${requestElevator?.code || ''}`" width="520px">
       <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-        title="创建后电梯将保持停用，并自动发布楼栋停梯公告；复检通过后方可恢复运行" />
+        title="系统将在事务内重新核验该电梯一周内困人事件是否达到阈值，核验通过后固化触发事件、故障代码与投诉汇总快照；电梯保持停用并自动发布停梯公告，复检通过后方可恢复运行" />
       <el-form label-width="90px">
         <el-form-item label="整改要求">
           <el-input v-model="requestNote" type="textarea" :rows="3"
@@ -196,12 +212,16 @@
       </el-form>
       <template #footer>
         <el-button @click="requestDialog = false">取消</el-button>
-        <el-button type="danger" :loading="acting" @click="doRequest">确认要求整改</el-button>
+        <el-button type="danger" :loading="acting" @click="doRequest">确认发起整改</el-button>
       </template>
     </el-dialog>
 
-    <!-- 提交方案对话框 -->
-    <el-dialog v-model="submitDialog" :title="`提交整改方案：${submitPlan?.elevator?.code || ''}`" width="560px">
+    <!-- 提交方案对话框（每次提交生成新版本，历史版本不可覆盖） -->
+    <el-dialog v-model="submitDialog"
+      :title="`提交整改方案（第 ${(submitView?.plan?.currentVersionNo || 0) + 1} 版）：${submitView?.plan?.elevator?.code || ''}`" width="560px">
+      <el-alert v-if="submitView?.plan?.status === 'RECHECK_FAILED'" type="error" :closable="false" show-icon
+        style="margin-bottom: 12px"
+        title="上一版复检未通过，本次提交将生成可追溯的新版本，历史失败版本及其结论永久保留" />
       <el-form label-width="110px">
         <el-form-item label="需更换配件" required>
           <el-input v-model="submitForm.parts" placeholder="如：门锁触点组件 ×2、门机控制板 ×1" />
@@ -227,16 +247,20 @@
       </el-form>
       <template #footer>
         <el-button @click="submitDialog = false">取消</el-button>
-        <el-button type="primary" :loading="acting" @click="doSubmit">提交方案</el-button>
+        <el-button type="primary" :loading="acting" @click="doSubmit">提交新版本</el-button>
       </template>
     </el-dialog>
 
-    <!-- 复检对话框 -->
-    <el-dialog v-model="recheckDialog" :title="`复检登记：${recheckPlan?.elevator?.code || ''}`" width="520px">
+    <!-- 复检对话框（仅最新版本可登记，登记后结论不可更改） -->
+    <el-dialog v-model="recheckDialog"
+      :title="`复检登记（第 ${recheckTarget?.version?.versionNo} 版）：${recheckTarget?.plan?.elevator?.code || ''}`" width="520px">
       <el-descriptions :column="1" size="small" border style="margin-bottom: 12px">
-        <el-descriptions-item label="配件">{{ recheckPlan?.parts }}</el-descriptions-item>
-        <el-descriptions-item label="复检人">{{ recheckPlan?.recheckInspector }}</el-descriptions-item>
+        <el-descriptions-item label="配件">{{ recheckTarget?.version?.parts }}</el-descriptions-item>
+        <el-descriptions-item label="复检人">{{ recheckTarget?.version?.recheckInspector }}</el-descriptions-item>
+        <el-descriptions-item label="提交">{{ recheckTarget?.version?.submittedBy }} ｜ {{ fmtTime(recheckTarget?.version?.submittedAt) }}</el-descriptions-item>
       </el-descriptions>
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
+        title="复检结论出具后不可更改；仅最新版本复检通过才会恢复电梯运行并发布复检公告" />
       <el-form label-width="90px">
         <el-form-item label="复检结论" required>
           <el-radio-group v-model="recheckForm.pass">
@@ -253,6 +277,97 @@
         <el-button :type="recheckForm.pass ? 'success' : 'danger'" :loading="acting" @click="doRecheck">
           确认复检{{ recheckForm.pass ? '通过' : '未通过' }}
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 整改申请详情：触发证据快照 + 版本历史 + 不可变复检记录 -->
+    <el-dialog v-model="historyDialog" :title="`整改申请详情：${detail?.plan?.elevator?.code || ''}`" width="880px">
+      <template v-if="detail">
+        <el-descriptions :column="3" size="small" border style="margin-bottom: 6px">
+          <el-descriptions-item label="申请状态">
+            <el-tag :type="PLAN_STATUS[detail.plan.status]?.type" size="small">{{ PLAN_STATUS[detail.plan.status]?.label }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="触发核验">
+            {{ detail.plan.triggerEventCount }} 起 / 阈值 {{ detail.plan.triggerThreshold }} 起
+          </el-descriptions-item>
+          <el-descriptions-item label="当前版本">第 {{ detail.plan.currentVersionNo }} 版</el-descriptions-item>
+          <el-descriptions-item label="证据窗口" :span="2">
+            {{ fmtTime(detail.plan.evidenceWindowStart, 'MM-DD HH:mm') }} ~ {{ fmtTime(detail.plan.evidenceWindowEnd, 'MM-DD HH:mm') }}
+          </el-descriptions-item>
+          <el-descriptions-item label="申请">{{ detail.plan.requestedBy }} ｜ {{ fmtTime(detail.plan.requestedAt, 'MM-DD HH:mm') }}</el-descriptions-item>
+          <el-descriptions-item label="故障代码快照" :span="3">
+            <el-tag v-for="c in snapshotFaultCodes" :key="c" size="small" effect="plain" class="flag-tag">{{ c }}</el-tag>
+            <span v-if="snapshotFaultCodes.length === 0">—</span>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="detail.plan.requestNote" label="整改要求" :span="3">{{ detail.plan.requestNote }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-divider content-position="left" style="margin: 12px 0">触发事件快照（申请时固化，不可变）</el-divider>
+        <el-table :data="snapshotEvents" size="small" max-height="160">
+          <el-table-column prop="eventNo" label="事件编号" width="150">
+            <template #default="{ row }"><span class="mono">{{ row.eventNo }}</span></template>
+          </el-table-column>
+          <el-table-column label="报警时间" width="150">
+            <template #default="{ row }">{{ fmtTime(row.alarmTime) }}</template>
+          </el-table-column>
+          <el-table-column prop="faultCode" label="故障代码" min-width="160">
+            <template #default="{ row }">{{ row.faultCode || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="事件状态" width="90">
+            <template #default="{ row }">
+              <el-tag :type="EVENT_STATUS[row.status]?.type" size="small">{{ EVENT_STATUS[row.status]?.label || row.status }}</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-divider content-position="left" style="margin: 12px 0">
+          投诉汇总快照（{{ snapshotComplaints.count || 0 }} 条，申请时固化）
+        </el-divider>
+        <el-table :data="snapshotComplaints.items || []" size="small" max-height="140">
+          <el-table-column prop="ownerName" label="投诉人" width="90" />
+          <el-table-column prop="content" label="内容" min-width="260" show-overflow-tooltip />
+          <el-table-column label="状态" width="80">
+            <template #default="{ row }">
+              <el-tag :type="COMPLAINT_STATUS[row.status]?.type" size="small">{{ COMPLAINT_STATUS[row.status]?.label || row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="投诉时间" width="140">
+            <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+          </el-table-column>
+        </el-table>
+
+        <el-divider content-position="left" style="margin: 12px 0">
+          方案版本历史（共 {{ detail.versions.length }} 版，历史版本与复检记录不可更改）
+        </el-divider>
+        <el-timeline style="padding-left: 4px">
+          <el-timeline-item v-for="v in versionsDesc" :key="v.id"
+            :type="v.status === 'RECHECK_PASSED' ? 'success' : v.status === 'RECHECK_FAILED' ? 'danger' : 'primary'"
+            :timestamp="fmtTime(v.submittedAt)" placement="top">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px">
+              <b>第 {{ v.versionNo }} 版</b>
+              <el-tag size="small" :type="VERSION_STATUS[v.status]?.type">{{ VERSION_STATUS[v.status]?.label }}</el-tag>
+              <el-tag v-if="v.versionNo === detail.plan.currentVersionNo" size="small" effect="plain">最新版本</el-tag>
+            </div>
+            <el-descriptions :column="2" size="small" border>
+              <el-descriptions-item label="配件" :span="2">{{ v.parts }}</el-descriptions-item>
+              <el-descriptions-item label="预计到货">{{ v.expectedArrival }}</el-descriptions-item>
+              <el-descriptions-item label="复检人">{{ v.recheckInspector }}</el-descriptions-item>
+              <el-descriptions-item label="公告发布时间">{{ fmtTime(v.noticePublishTime) }}</el-descriptions-item>
+              <el-descriptions-item label="提交人">{{ v.submittedBy }} ｜ {{ fmtTime(v.submittedAt, 'MM-DD HH:mm') }}</el-descriptions-item>
+              <el-descriptions-item v-if="v.planDetail" label="方案详情" :span="2">{{ v.planDetail }}</el-descriptions-item>
+            </el-descriptions>
+            <div v-if="v.recheckedAt" style="margin-top: 6px">
+              <el-alert :type="v.status === 'RECHECK_PASSED' ? 'success' : 'error'" :closable="false" show-icon>
+                <template #title>
+                  复检{{ v.status === 'RECHECK_PASSED' ? '通过' : '未通过' }}：{{ v.recheckResult }}
+                  （复检登记：{{ v.recheckedBy }} ｜ {{ fmtTime(v.recheckedAt) }}）
+                  <span v-if="recordOf(v)" style="color: #8a94a8">不可变复检记录 #{{ recordOf(v).id }}</span>
+                </template>
+              </el-alert>
+            </div>
+          </el-timeline-item>
+        </el-timeline>
+        <el-empty v-if="detail.versions.length === 0" description="尚未提交方案版本" :image-size="60" />
       </template>
     </el-dialog>
 
@@ -311,6 +426,12 @@ const PLAN_STATUS = {
   RECHECK_FAILED: { label: '复检未通过', type: 'danger' }
 }
 
+const VERSION_STATUS = {
+  SUBMITTED: { label: '待复检', type: 'primary' },
+  RECHECK_PASSED: { label: '复检通过', type: 'success' },
+  RECHECK_FAILED: { label: '复检未通过', type: 'danger' }
+}
+
 const auth = useAuthStore()
 const loading = ref(false)
 const acting = ref(false)
@@ -326,12 +447,14 @@ const requestDialog = ref(false)
 const submitDialog = ref(false)
 const recheckDialog = ref(false)
 const assistDialog = ref(false)
+const historyDialog = ref(false)
 
 const summary = ref({})
 const requestElevator = ref(null)
 const requestNote = ref('')
-const submitPlan = ref(null)
-const recheckPlan = ref(null)
+const submitView = ref(null)
+const recheckTarget = ref(null)
+const detail = ref(null)
 
 const submitForm = reactive({ parts: '', expectedArrival: '', recheckInspector: '', noticePublishTime: '', planDetail: '' })
 const recheckForm = reactive({ pass: true, result: '' })
@@ -341,6 +464,20 @@ const canRequest = computed(() => ['ADMIN', 'DUTY'].includes(auth.user?.role))
 const canSubmit = computed(() => ['ADMIN', 'DUTY', 'MAINTENANCE'].includes(auth.user?.role))
 const canRecheck = computed(() => ['ADMIN', 'DUTY', 'MAINTENANCE'].includes(auth.user?.role))
 const canAssist = computed(() => ['ADMIN', 'DUTY', 'BUTLER'].includes(auth.user?.role))
+
+const snapshotEvents = computed(() => parseJson(detail.value?.plan?.triggerEventsJson, []))
+const snapshotFaultCodes = computed(() => parseJson(detail.value?.plan?.faultCodesJson, []))
+const snapshotComplaints = computed(() => parseJson(detail.value?.plan?.complaintSummaryJson, { count: 0, items: [] }))
+const versionsDesc = computed(() => [...(detail.value?.versions || [])].sort((a, b) => b.versionNo - a.versionNo))
+
+function parseJson(text, fallback) {
+  if (!text) return fallback
+  try { return JSON.parse(text) } catch { return fallback }
+}
+
+function recordOf(version) {
+  return (detail.value?.recheckRecords || []).find((r) => r.version?.id === version.id)
+}
 
 function fmtMinutes(minutes) {
   if (minutes == null) return '—'
@@ -394,7 +531,7 @@ async function doRequest() {
   acting.value = true
   try {
     await api.post(`/elevators/${requestElevator.value.id}/rectification-plans`, { requestNote: requestNote.value })
-    ElMessage.success('已要求维保单位提交整改方案，电梯保持停用并已发布停梯公告')
+    ElMessage.success('整改申请已创建：证据快照已固化，电梯保持停用并已发布停梯公告')
     requestDialog.value = false
     loadAll()
   } finally {
@@ -402,11 +539,12 @@ async function doRequest() {
   }
 }
 
-function openSubmit(plan) {
-  submitPlan.value = plan
+function openSubmit(view) {
+  submitView.value = view
+  const latest = view.latestVersion || {}
   Object.assign(submitForm, {
-    parts: plan.parts || '', expectedArrival: plan.expectedArrival || '',
-    recheckInspector: plan.recheckInspector || '', noticePublishTime: '', planDetail: plan.planDetail || ''
+    parts: latest.parts || '', expectedArrival: latest.expectedArrival || '',
+    recheckInspector: latest.recheckInspector || '', noticePublishTime: '', planDetail: latest.planDetail || ''
   })
   submitDialog.value = true
 }
@@ -418,8 +556,8 @@ async function doSubmit() {
   }
   acting.value = true
   try {
-    await api.put(`/rectification-plans/${submitPlan.value.id}/submit`, submitForm)
-    ElMessage.success('整改方案已提交，等待复检')
+    await api.post(`/rectification-plans/${submitView.value.plan.id}/versions`, submitForm)
+    ElMessage.success(`第 ${(submitView.value.plan.currentVersionNo || 0) + 1} 版整改方案已提交，等待复检`)
     submitDialog.value = false
     loadAll()
   } finally {
@@ -427,8 +565,8 @@ async function doSubmit() {
   }
 }
 
-function openRecheck(plan) {
-  recheckPlan.value = plan
+function openRecheck(view) {
+  recheckTarget.value = { plan: view.plan, version: view.latestVersion }
   recheckForm.pass = true
   recheckForm.result = ''
   recheckDialog.value = true
@@ -441,13 +579,19 @@ async function doRecheck() {
   }
   acting.value = true
   try {
-    await api.put(`/rectification-plans/${recheckPlan.value.id}/recheck`, recheckForm)
-    ElMessage.success(recheckForm.pass ? '复检通过，电梯已恢复运行并发布复检公告' : '已登记复检未通过，电梯保持停梯')
+    await api.post(`/rectification-versions/${recheckTarget.value.version.id}/recheck`, recheckForm)
+    ElMessage.success(recheckForm.pass ? '复检通过，电梯已恢复运行并发布复检公告' : '已登记复检未通过（结论不可更改），电梯保持停梯')
     recheckDialog.value = false
     loadAll()
   } finally {
     acting.value = false
   }
+}
+
+async function openHistory(view) {
+  const res = await api.get(`/rectification-plans/${view.plan.id}`)
+  detail.value = res.data
+  historyDialog.value = true
 }
 
 function openAssist() {

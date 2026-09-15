@@ -6,6 +6,10 @@
 
 > 建设小区电梯困人救援与维保责任追踪平台，可采用 Vue 3、Spring Boot 和 PostgreSQL。电梯物联网报警、乘客电话求助或物业巡查发现困人后，平台记录电梯编号、楼栋、楼层、轿厢人数、老人儿童情况、通话状态、门区位置和电梯维保单位。物业值班员接警后，需要同步通知维保人员、保安、楼栋管家和必要时的消防救援，并持续记录与轿厢内乘客的通话安抚。维保人员到场后，平台记录到达时间、开门方式、故障代码、困人释放、乘客身体状态和是否需要医疗协助。若发生维保迟到、物业联系不上、消防先到场、乘客要求赔偿、同一电梯反复故障或维保单位认为使用不当，平台要把报警、救援、复位、停梯、复检、业主通知和费用责任放在同一个事件里处理。事件关闭后，救援时长、责任判定、维保整改、停梯公告和业主回访进入档案，用于判断是否更换部件、处罚维保单位或调整物业值班。平台还要接入电梯年检、维保合同、配件更换、业主投诉和物业值班表。对于高层住宅，救援过程中还要同步告知同楼栋业主是否停用电梯、是否开放备用梯、老人上下楼如何临时协助，避免救援结束后楼栋秩序继续混乱。
 
+## 原始需求（本轮任务：停梯整改触发证据与复检版本审计修复）
+
+> 修复反复故障停梯整改的触发证据与复检版本审计：整改申请只能基于同一电梯一周内达到阈值的困人事件，事务内重新核验并固化触发事件、故障代码和投诉汇总快照；复检未通过后不得覆盖原方案及失败结论，应生成可追溯的新方案版本或不可变复检记录，保留每版配件、预计到货、复检人、公告时间、提交/复检人员与结论。当前有效版本未通过时电梯和停梯公告持续有效，只有最新版本复检通过才允许恢复运行并发布复检公告。验收：0/1起事件的电梯申请返回4xx且方案、停梯状态、公告不变；同一电梯首版失败后修订并通过，历史失败版本及其字段可查，运行状态和恢复公告只在最新版通过后变更。
+
 ## 技术栈
 
 | 层 | 技术 |
@@ -62,6 +66,48 @@ TOKEN=$(curl -s -X POST "http://host.docker.internal:${PORT}/api/auth/login" \
 curl -s "http://host.docker.internal:${PORT}/api/dashboard" -H "Authorization: Bearer ${TOKEN}"
 ```
 
+### 停梯整改验收流（对应本轮任务验收标准）
+
+以下脚本按「0/1 起事件 4xx 且状态不变 → 达标电梯申请 → 首版失败 → 修订通过」走通，可直接执行（需先按上文取得 `PORT` 与 `TOKEN`，另需维保账号 `maint02/123456` 的 `MTOKEN`）：
+
+```bash
+B="http://host.docker.internal:${PORT}/api"
+AUTH="Authorization: Bearer ${TOKEN}"
+MAUTH="Authorization: Bearer ${MTOKEN}"
+CT="Content-Type: application/json"
+
+# 电梯 id：1=DT-1-1(0起) 2=DT-1-2(0起) 3=DT-2-1(3起) 5=DT-3-1(1起) 6=DT-3-2(整改中)
+# ① 0/1 起事件的电梯申请 → 4xx，且方案、停梯状态、公告不变
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$B/elevators/1/rectification-plans" -H "$AUTH" -H "$CT" -d '{"requestNote":"x"}'   # → 400
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$B/elevators/5/rectification-plans" -H "$AUTH" -H "$CT" -d '{"requestNote":"x"}'   # → 400
+curl -s "$B/elevators/1" -H "$AUTH" | grep -o '"status":"RUNNING"'            # 电梯仍为运行
+curl -s "$B/rectification-plans" -H "$AUTH"                                   # 无新申请（仅种子 DT-3-2 一条）
+
+# ② 达标电梯（DT-2-1，近 7 天 3 起）申请 → 成功并固化快照、停梯、发停梯公告
+curl -s -X POST "$B/elevators/3/rectification-plans" -H "$AUTH" -H "$CT" -d '{"requestNote":"一周3起困人，要求彻底整改"}'
+# 返回中含 triggerEventCount=3、triggerEventsJson/faultCodesJson/complaintSummaryJson 快照
+curl -s "$B/elevators/3" -H "$AUTH" | grep -o '"status":"STOPPED"'            # 已停梯
+
+# ③ 首版提交 → 复检未通过（maint02 为 DT-2-1 所属维保单位账号）
+curl -s -X POST "$B/rectification-plans/2/versions" -H "$MAUTH" -H "$CT" \
+  -d '{"parts":"安全回路触点组件 ×2","expectedArrival":"2026-09-20","recheckInspector":"特检院 李工","noticePublishTime":"2026-09-21T09:00:00","planDetail":"更换触点组件"}'
+curl -s -X POST "$B/rectification-versions/2/recheck" -H "$MAUTH" -H "$CT" \
+  -d '{"pass":false,"result":"更换后安全回路仍偶发断开，未通过"}'
+curl -s "$B/elevators/3" -H "$AUTH" | grep -o '"status":"STOPPED"'            # 仍未通过 → 保持停梯
+
+# ④ 修订第 2 版 → 复检通过 → 仅此时电梯恢复运行并发布复检公告
+curl -s -X POST "$B/rectification-plans/2/versions" -H "$MAUTH" -H "$CT" \
+  -d '{"parts":"安全回路整套组件（含主板） ×1","expectedArrival":"2026-09-25","recheckInspector":"特检院 李工","noticePublishTime":"2026-09-26T09:00:00","planDetail":"整套更换并全检"}'
+curl -s -X POST "$B/rectification-versions/3/recheck" -H "$MAUTH" -H "$CT" \
+  -d '{"pass":true,"result":"全检合格，同意恢复运行"}'
+curl -s "$B/elevators/3" -H "$AUTH" | grep -o '"status":"RUNNING"'            # 最新版通过 → 恢复运行
+
+# ⑤ 历史失败版本及其字段、不可变复检记录均可查
+curl -s "$B/rectification-plans/2" -H "$AUTH"    # versions[0] 为 RECHECK_FAILED 且配件/结论完整；recheckRecords 两条
+```
+
+> 注：上例中整改申请 id 为 `2`（种子数据 DT-3-2 的申请为 `1`）、版本 id 依次为 `2`、`3`；若数据库非全新，请先用 `GET /api/rectification-plans` 查实际 id。
+
 ## 测试账号（逐角色）
 
 | 用户名 | 密码 | 角色 | 权限/职责说明 |
@@ -108,10 +154,13 @@ curl -s "http://host.docker.internal:${PORT}/api/dashboard" -H "Authorization: B
 - **健康风险**：记录到恐慌/心脏病/孕妇时，页面实时提示保持安抚、提前联系 120 待命；
 - **归档可见**：事件关闭后，安抚通话次数、频率、健康风险标记与全部通话记录随事件归档，业主回访时可直接查看。
 
-### 反复故障停梯整改
+### 反复故障停梯整改（触发证据 + 复检版本审计）
 
 - **自动汇总**：同一电梯一周内 ≥2 次困人即列入反复故障预警，自动汇总故障代码、困人事件、维保（配件更换）记录、本次停梯时长与业主投诉；
-- **整改方案流转**：物业一键要求维保单位提交整改方案（电梯随即保持停用并自动发布楼栋停梯公告）→ 维保提交方案（**配件、预计到货、复检人、业主公告发布时间**必填）→ 复检登记（通过则恢复运行并自动发布复检公告；未通过则继续停梯、需重新提交）；
+- **整改申请（触发证据门禁）**：申请只能基于同一电梯一周内达到阈值（默认 7 天 / 2 起，`RECTIFICATION_TRIGGER_WINDOW_DAYS` / `RECTIFICATION_TRIGGER_THRESHOLD` 可调）的困人事件；事务内锁定电梯行**重新核验**，不达标整体回滚返回 4xx，方案、停梯状态、公告均不变；核验通过后同事务**固化触发事件、故障代码、投诉汇总快照**（含证据窗口与当时阈值，此后不可变），电梯随即保持停用并自动发布楼栋停梯公告；
+- **方案版本流转**：维保每次提交生成**新版本行**（版本号递增，配件、预计到货、复检人、业主公告发布时间必填）；复检未通过后**不得覆盖原方案及失败结论**，只能提交可追溯的修订版本，历史失败版本及其全部字段永久可查；
+- **不可变复检记录**：每次复检登记生成一条只增不改的复检记录（是否通过、结果、复检登记人、时间），每版仅允许登记一次，且只能对**最新版本**登记；
+- **恢复运行门禁**：当前有效版本未通过时电梯与停梯公告持续有效（事件复位、电梯档案编辑等旁路也被禁止恢复运行）；**只有最新版本复检通过**才允许恢复运行并自动发布复检公告；
 - **停梯时长**：电梯进入停梯状态自动计时，恢复运行清零，故障汇总中实时展示；
 - **老人帮扶**：停梯期间可登记老人上下楼需求（就医、买菜等）与临时帮扶人员，帮扶中/已办结全程可跟踪，避免整改影响日常生活。
 
@@ -121,7 +170,8 @@ curl -s "http://host.docker.internal:${PORT}/api/dashboard" -H "Authorization: B
 - **维保单位**：安捷电梯维保（信用 92）、恒升机电维保（信用 85，有迟到与反复故障记录）；
 - **历史事件（已关闭）**：含维保迟到、乘客索赔、反复故障、消防先到场、维保主张使用不当、设备老化等典型情形，均已走完责任判定与归档；
 - **进行中事件**：`EV当天-001`（待调度，含老人儿童）与 `EV当天-002`（已调度待到场），用于演示完整处置流程；
-- **配套数据**：维保合同 6 份、年检记录 6 条、配件更换 3 条、业主投诉 2 条、本周值班表、停梯/备用梯/老人协助公告 3 条、业主回访 2 条。
+- **停梯整改申请**：DT-3-2 近一周 2 起困人（E57 门锁回路故障）已发起整改申请（含触发事件/故障代码/投诉汇总快照），第 1 版方案已提交待复检；DT-2-1 近一周 3 起困人（E21 安全回路断开）尚未发起申请，可演示「申请 → 首版失败 → 修订通过」全流程；DT-1-1（0 起）/ DT-3-1（1 起）用于演示证据不足返回 4xx；
+- **配套数据**：维保合同 6 份、年检记录 6 条、配件更换 3 条、业主投诉 3 条、本周值班表、停梯/备用梯/老人协助公告 3 条、业主回访 2 条。
 
 ## 核心业务流程
 
@@ -192,6 +242,12 @@ curl -s "http://host.docker.internal:${PORT}/api/dashboard" -H "Authorization: B
 | POST | `/api/events/{id}/followups` | 业主回访 |
 | GET/POST | `/api/elevators` 等 | 电梯/楼栋/维保单位/合同/年检/配件档案 |
 | GET/POST | `/api/complaints`、`/api/duty-schedules`、`/api/notices` | 投诉 / 值班 / 公告 |
+| GET | `/api/elevators/repeat-faults`、`/api/elevators/{id}/fault-summary` | 反复故障预警 / 单梯故障汇总 |
+| POST | `/api/elevators/{id}/rectification-plans` | 发起停梯整改申请（事务内核验阈值+固化证据快照，不足返回 4xx） |
+| GET | `/api/rectification-plans`、`/api/rectification-plans/{id}` | 整改申请列表 / 详情（快照+全部版本+复检记录） |
+| POST | `/api/rectification-plans/{id}/versions` | 提交方案新版本（历史版本不可覆盖） |
+| POST | `/api/rectification-versions/{versionId}/recheck` | 复检登记（仅最新版本一次，生成不可变复检记录） |
+| GET | `/api/rectification-plans/{id}/recheck-records` | 不可变复检记录列表 |
 | GET/POST/PUT | `/api/users` | 用户管理（管理员） |
 
 ## 环境变量
@@ -202,3 +258,5 @@ curl -s "http://host.docker.internal:${PORT}/api/dashboard" -H "Authorization: B
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | 数据库库名/账号/密码 | elevator_rescue / postgres / 必填 |
 | `JWT_SECRET` | JWT 签名密钥（≥32 字符） | 必填 |
 | `ARRIVE_LIMIT_MINUTES` | 维保到场时限（超时自动标记迟到） | 30 |
+| `RECTIFICATION_TRIGGER_THRESHOLD` | 停梯整改申请触发阈值（窗口内困人事件起数） | 2 |
+| `RECTIFICATION_TRIGGER_WINDOW_DAYS` | 触发证据窗口（天） | 7 |

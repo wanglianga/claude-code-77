@@ -19,6 +19,7 @@ public class ElevatorController {
     private final AnnualInspectionRepository inspectionRepo;
     private final PartReplacementRepository partRepo;
     private final RescueEventRepository eventRepo;
+    private final RectificationPlanRepository planRepo;
 
     @GetMapping
     public List<Elevator> list(@RequestParam(required = false) Long buildingId) {
@@ -45,6 +46,15 @@ public class ElevatorController {
         Elevator existing = elevatorRepo.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("电梯不存在"));
         elevator.setId(existing.getId());
+        // 存在未闭环停梯整改申请时，电梯必须保持停梯，只有最新方案版本复检通过才允许恢复运行
+        if (elevator.getStatus() != Elevator.ElevatorStatus.STOPPED) {
+            boolean rectificationActive = planRepo.findByElevatorIdOrderByRequestedAtDesc(id).stream()
+                    .anyMatch(p -> p.getStatus() != com.elevator.rescue.entity.RectificationPlan.PlanStatus.RECHECK_PASSED);
+            if (rectificationActive) {
+                throw new IllegalStateException("电梯 " + existing.getCode()
+                        + " 存在进行中的停梯整改申请，须最新方案版本复检通过后方可恢复运行");
+            }
+        }
         // 停梯计时：状态切换到停梯时记录开始时间，恢复时清空
         if (elevator.getStatus() == Elevator.ElevatorStatus.STOPPED) {
             elevator.setStoppedSince(existing.getStoppedSince() != null

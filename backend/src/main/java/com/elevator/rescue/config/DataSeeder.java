@@ -2,6 +2,7 @@ package com.elevator.rescue.config;
 
 import com.elevator.rescue.entity.*;
 import com.elevator.rescue.repository.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -11,7 +12,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 首次启动时初始化演示数据（仅当用户表为空时执行）。
@@ -36,8 +39,10 @@ public class DataSeeder implements CommandLineRunner {
     private final BuildingNoticeRepository noticeRepo;
     private final OwnerFollowupRepository followupRepo;
     private final RectificationPlanRepository planRepo;
+    private final RectificationPlanVersionRepository versionRepo;
     private final ElderlyAssistanceRepository assistanceRepo;
     private final PasswordEncoder passwordEncoder;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -250,25 +255,81 @@ public class DataSeeder implements CommandLineRunner {
                 "全面排查安全回路", LocalDate.now().plusDays(2), false,
                 duty2, maint2, sec1, butler2, null, 28, false, true, false);
 
-        // ---------- DT-3-2 停梯整改方案（已提交，待复检） ----------
+        // ---------- 近 7 天反复故障（DT-3-2，门锁回路故障 2 起） ----------
+        RescueEvent ev32a = closedEvent("EV" + LocalDate.now().minusDays(6).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd")) + "-901",
+                e32, b3, RescueEvent.AlarmSource.IOT,
+                LocalDateTime.now().minusDays(6).withHour(8).withMinute(15).withSecond(0).withNano(0), "7 层", 2, 0, 0,
+                24, "松闸盘车平层开门", "E57-门锁回路故障", "乘客无不适", false,
+                RescueEvent.Responsibility.MAINTENANCE, "门锁触点组件老化，门锁回路断开",
+                RescueEvent.CostBearer.MAINTENANCE, new BigDecimal("0"),
+                "更换门锁触点组件", LocalDate.now().plusDays(1), false,
+                duty2, maint2, sec1, null, null, 22, false, true, false);
+        RescueEvent ev32b = closedEvent("EV" + LocalDate.now().minusDays(4).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd")) + "-901",
+                e32, b3, RescueEvent.AlarmSource.PHONE,
+                LocalDateTime.now().minusDays(4).withHour(19).withMinute(40).withSecond(0).withNano(0), "11 层", 3, 1, 0,
+                29, "检修运行至平层开门", "E57-门锁回路故障", "老人略受惊吓", false,
+                RescueEvent.Responsibility.MAINTENANCE, "同一故障代码一周内再次出现，上次整改不彻底",
+                RescueEvent.CostBearer.MAINTENANCE, new BigDecimal("0"),
+                "全面排查门锁回路并提交彻底整改方案", LocalDate.now().plusDays(3), false,
+                duty1, maint2, sec1, null, null, 26, false, true, false);
+
+        // DT-3-2 业主投诉（进入整改申请的投诉汇总快照）
+        OwnerComplaint e32Complaint = new OwnerComplaint();
+        e32Complaint.setElevator(e32);
+        e32Complaint.setEventId(ev32b.getId());
+        e32Complaint.setOwnerName("刘先生");
+        e32Complaint.setOwnerPhone("13633334444");
+        e32Complaint.setBuildingName(b3.getName());
+        e32Complaint.setContent("3 栋电梯一周困人两次，家里老人不敢坐电梯，要求彻底整改并公布复检结果");
+        e32Complaint.setStatus(OwnerComplaint.ComplaintStatus.PROCESSING);
+        e32Complaint.setHandlerName(duty2.getRealName());
+        complaintRepo.save(e32Complaint);
+
+        // ---------- DT-3-2 停梯整改申请（含触发证据快照；第 1 版方案已提交，待复检） ----------
         e32.setStoppedSince(LocalDateTime.now().minusDays(2));
         elevatorRepo.save(e32);
         RectificationPlan plan = new RectificationPlan();
         plan.setElevator(e32);
-        plan.setEventId(ev4.getId());
+        plan.setEventId(ev32b.getId());
         plan.setCompanyName(c2.getName());
-        plan.setRequestNote("困人事件后年检整改项未落实，要求提交彻底整改方案");
+        plan.setRequestNote("一周内 2 起困人（门锁回路故障），要求提交彻底整改方案");
         plan.setRequestedBy(duty2.getRealName());
         plan.setRequestedAt(LocalDateTime.now().minusDays(2));
         plan.setStatus(RectificationPlan.PlanStatus.SUBMITTED);
-        plan.setParts("门锁触点组件 ×2、门机控制板 ×1");
-        plan.setExpectedArrival(LocalDate.now().plusDays(3));
-        plan.setRecheckInspector("市特种设备检验研究院 李工");
-        plan.setNoticePublishTime(LocalDateTime.now().plusDays(4));
-        plan.setPlanDetail("更换门锁触点组件与门机控制板，全检门系统与安全回路，复检合格后恢复运行。");
-        plan.setSubmittedBy(maint2.getRealName());
-        plan.setSubmittedAt(LocalDateTime.now().minusDays(1));
+        // 触发证据快照（申请时固化，不可变）
+        plan.setTriggerThreshold(2);
+        plan.setEvidenceWindowStart(plan.getRequestedAt().minusDays(7));
+        plan.setEvidenceWindowEnd(plan.getRequestedAt());
+        plan.setTriggerEventCount(2);
+        plan.setTriggerEventsJson(toJson(List.of(snapshotEvent(ev32a), snapshotEvent(ev32b))));
+        plan.setFaultCodesJson(toJson(List.of("E57-门锁回路故障")));
+        Map<String, Object> complaintSummary = new LinkedHashMap<>();
+        complaintSummary.put("windowDays", 7);
+        complaintSummary.put("count", 1);
+        Map<String, Object> complaintItem = new LinkedHashMap<>();
+        complaintItem.put("id", e32Complaint.getId());
+        complaintItem.put("ownerName", e32Complaint.getOwnerName());
+        complaintItem.put("content", e32Complaint.getContent());
+        complaintItem.put("status", e32Complaint.getStatus().name());
+        complaintItem.put("createdAt", e32Complaint.getCreatedAt().toString());
+        complaintSummary.put("items", List.of(complaintItem));
+        plan.setComplaintSummaryJson(toJson(complaintSummary));
+        plan.setCurrentVersionNo(1);
         planRepo.save(plan);
+
+        // 第 1 版方案（待复检）
+        RectificationPlanVersion planV1 = new RectificationPlanVersion();
+        planV1.setPlan(plan);
+        planV1.setVersionNo(1);
+        planV1.setParts("门锁触点组件 ×2、门机控制板 ×1");
+        planV1.setExpectedArrival(LocalDate.now().plusDays(3));
+        planV1.setRecheckInspector("市特种设备检验研究院 李工");
+        planV1.setNoticePublishTime(LocalDateTime.now().plusDays(4));
+        planV1.setPlanDetail("更换门锁触点组件与门机控制板，全检门系统与安全回路，复检合格后恢复运行。");
+        planV1.setSubmittedBy(maint2.getRealName());
+        planV1.setSubmittedAt(LocalDateTime.now().minusDays(1));
+        planV1.setStatus(RectificationPlanVersion.VersionStatus.SUBMITTED);
+        versionRepo.save(planV1);
 
         // ---------- 停梯期间老人帮扶登记 ----------
         assistance(b3, e32, "张桂英", "3 栋 1502", "13611110001", "每周二、五上午去医院透析，需协助上下楼", "物业客服小李", "13500000101", true);
@@ -547,6 +608,25 @@ public class DataSeeder implements CommandLineRunner {
             c.setHandledAt(LocalDateTime.now().minusDays(2));
         }
         complaintRepo.save(c);
+    }
+
+    /** 触发事件快照条目（与 RectificationService 申请时固化的结构一致） */
+    private Map<String, Object> snapshotEvent(RescueEvent e) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", e.getId());
+        item.put("eventNo", e.getEventNo());
+        item.put("faultCode", e.getFaultCode());
+        item.put("alarmTime", e.getAlarmTime() != null ? e.getAlarmTime().toString() : null);
+        item.put("status", e.getStatus() != null ? e.getStatus().name() : null);
+        return item;
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new IllegalStateException("种子数据快照序列化失败", e);
+        }
     }
 
     private void duty(LocalDate date, User user, DutySchedule.Shift shift, String position) {

@@ -31,6 +31,7 @@ public class EventService {
     private final PartReplacementRepository partRepo;
     private final MaintenanceCompanyRepository companyRepo;
     private final UserRepository userRepo;
+    private final RectificationPlanRepository planRepo;
 
     @Value("${app.arrive-limit-minutes:30}")
     private int arriveLimitMinutes;
@@ -382,6 +383,8 @@ public class EventService {
                 elevator.setStoppedSince(LocalDateTime.now());
             }
         } else {
+            // 存在未闭环停梯整改申请时，只有其最新方案版本复检通过才允许恢复运行
+            requireNoActiveRectification(elevator);
             elevator.setStatus(Elevator.ElevatorStatus.RUNNING);
             elevator.setStoppedSince(null);
         }
@@ -392,6 +395,16 @@ public class EventService {
                         ? "电梯复位但保持停梯，待复检合格后恢复" : "电梯复位并恢复运行")
                         + "；复检结果: " + req.recheckResult());
         return e;
+    }
+
+    /** 电梯存在进行中（最新版未复检通过）的停梯整改申请时，禁止通过其他途径恢复运行 */
+    private void requireNoActiveRectification(Elevator elevator) {
+        boolean active = planRepo.findByElevatorIdOrderByRequestedAtDesc(elevator.getId()).stream()
+                .anyMatch(p -> p.getStatus() != RectificationPlan.PlanStatus.RECHECK_PASSED);
+        if (active) {
+            throw new IllegalStateException("电梯 " + elevator.getCode()
+                    + " 存在进行中的停梯整改申请，须最新方案版本复检通过后方可恢复运行");
+        }
     }
 
     // ---------------- 关闭归档 ----------------

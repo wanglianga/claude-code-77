@@ -38,3 +38,8 @@ app:
   rescue-alert-minutes: ${RESCUE_ALERT_MINUTES:30}
   # 通话间隔提醒阈值（分钟）：超过未通话提醒保持通话频率
   call-remind-minutes: ${CALL_REMIND_MINUTES:10}
+  rectification:
+    # 停梯整改申请触发阈值：同一电梯窗口期内困人事件达到该起数才允许申请（事务内重新核验）
+    trigger-threshold: ${RECTIFICATION_TRIGGER_THRESHOLD:2}
+    # 触发证据窗口（天）
+    trigger-window-days: ${RECTIFICATION_TRIGGER_WINDOW_DAYS:7}
