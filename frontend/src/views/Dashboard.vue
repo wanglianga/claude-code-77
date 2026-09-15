@@ -61,7 +61,7 @@
           <template #header>
             <div style="display: flex; justify-content: space-between; align-items: center">
               <span>最新事件</span>
-              <el-button type="primary" size="small" @click="$router.push('/events/new')">
+              <el-button v-if="['ADMIN', 'DUTY'].includes(auth.user?.role)" type="primary" size="small" @click="$router.push('/events/new')">
                 <el-icon style="margin-right: 4px"><Plus /></el-icon>接警登记
               </el-button>
             </div>
@@ -141,8 +141,11 @@
 import { onMounted, onBeforeUnmount, ref } from 'vue'
 import * as echarts from 'echarts'
 import api from '../api'
+import { useAuthStore } from '../store/auth'
 import { ALARM_SOURCE, EVENT_STATUS, ELEVATOR_STATUS } from '../utils/dict'
 import { fmtTime } from '../utils/format'
+
+const auth = useAuthStore()
 
 const loading = ref(false)
 const stats = ref({})

@@ -1,6 +1,7 @@
 package com.elevator.rescue.dto;
 
 import com.elevator.rescue.entity.RescueEvent.*;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
@@ -38,7 +39,7 @@ public class EventDtos {
     public record CallRequest(
             LocalDateTime callTime,
             String passengerState,
-            String content,
+            @NotBlank(message = "请填写通话内容") String content,
             CallStatus callStatus) {
     }
 
@@ -50,10 +51,10 @@ public class EventDtos {
 
     public record ReleaseRequest(
             LocalDateTime releasedAt,
-            String doorOpenMethod,
-            String faultCode,
-            String passengerHealth,
-            Boolean medicalAssistance,
+            @NotBlank(message = "请填写开门方式") String doorOpenMethod,
+            @NotBlank(message = "请填写故障代码") String faultCode,
+            @NotBlank(message = "请填写乘客身体状态") String passengerHealth,
+            @NotNull(message = "请明确是否需要医疗协助") Boolean medicalAssistance,
             String rescueNote) {
     }
 
@@ -61,13 +62,13 @@ public class EventDtos {
             LocalDateTime resetAt,
             Boolean elevatorStopped,
             LocalDateTime recheckedAt,
-            String recheckResult) {
+            @NotBlank(message = "请填写复检结果") String recheckResult) {
     }
 
     public record CloseRequest(
             @NotNull(message = "请选择责任判定") Responsibility responsibility,
-            String responsibilityDetail,
-            CostBearer costBearer,
+            @NotBlank(message = "请填写责任判定说明") String responsibilityDetail,
+            @NotNull(message = "请选择费用承担方") CostBearer costBearer,
             BigDecimal costAmount,
             String rectification,
             LocalDate rectificationDeadline,
@@ -90,7 +91,7 @@ public class EventDtos {
     }
 
     public record FollowupRequest(
-            String ownerName,
+            @NotBlank(message = "请填写回访对象") String ownerName,
             String ownerPhone,
             LocalDateTime followupTime,
             Integer satisfaction,

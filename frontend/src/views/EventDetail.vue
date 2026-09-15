@@ -63,10 +63,10 @@
 
             <el-divider content-position="left" style="margin: 14px 0">异常情况标记</el-divider>
             <el-checkbox v-for="flag in EVENT_FLAGS" :key="flag.key" v-model="flagsForm[flag.key]" :label="flag.label"
-              :disabled="event.status === 'CLOSED'" style="margin-right: 16px" />
+              :disabled="event.status === 'CLOSED' || !can('flags')" style="margin-right: 16px" />
             <el-input v-if="flagsForm.compensationRequested" v-model="flagsForm.compensationDetail" type="textarea" :rows="2"
-              placeholder="赔偿诉求说明" style="margin-top: 10px" :disabled="event.status === 'CLOSED'" />
-            <div v-if="event.status !== 'CLOSED'" style="margin-top: 10px">
+              placeholder="赔偿诉求说明" style="margin-top: 10px" :disabled="event.status === 'CLOSED' || !can('flags')" />
+            <div v-if="event.status !== 'CLOSED' && can('flags')" style="margin-top: 10px">
               <el-button size="small" @click="saveFlags">保存标记</el-button>
             </div>
           </el-card>
@@ -77,16 +77,22 @@
               <div class="stage-title"><span class="stage-index">2</span>通知调度</div>
             </template>
             <template v-if="event.status === 'PENDING'">
-              <el-alert type="warning" :closable="false" show-icon title="请同步通知维保单位、保安、楼栋管家；如有老人儿童或通话中断，建议同步通知消防救援"
-                style="margin-bottom: 12px" />
-              <el-checkbox v-model="dispatchForm.notifyMaintenance" label="通知维保单位（30 分钟内到场）" />
-              <el-checkbox v-model="dispatchForm.notifySecurity" label="通知保安（现场秩序维护）" />
-              <el-checkbox v-model="dispatchForm.notifyButler" label="通知楼栋管家（业主安抚）" />
-              <el-checkbox v-model="dispatchForm.notifyFire" label="通知消防救援（119 联动）" />
-              <el-input v-model="dispatchForm.note" placeholder="调度备注（可空）" style="margin: 12px 0" />
-              <div>
-                <el-button type="danger" :loading="acting" @click="doDispatch">确认通知并调度</el-button>
-              </div>
+              <template v-if="can('dispatch')">
+                <el-alert v-if="fireRequired" type="error" :closable="false" show-icon
+                  title="高风险场景：含老人/儿童或通话中断，必须同步通知消防救援" style="margin-bottom: 12px" />
+                <el-alert v-else type="warning" :closable="false" show-icon
+                  title="维保单位、保安、楼栋管家为必通知方" style="margin-bottom: 12px" />
+                <el-checkbox :model-value="true" disabled label="通知维保单位（30 分钟内到场，必选）" />
+                <el-checkbox :model-value="true" disabled label="通知保安（现场秩序维护，必选）" />
+                <el-checkbox :model-value="true" disabled label="通知楼栋管家（业主安抚，必选）" />
+                <el-checkbox v-model="dispatchForm.notifyFire" :disabled="fireRequired"
+                  :label="fireRequired ? '通知消防救援（高风险场景必选）' : '通知消防救援（119 联动）'" />
+                <el-input v-model="dispatchForm.note" placeholder="调度备注（可空）" style="margin: 12px 0" />
+                <div>
+                  <el-button type="danger" :loading="acting" @click="doDispatch">确认通知并调度</el-button>
+                </div>
+              </template>
+              <el-text v-else type="info" size="small">等待物业值班员通知调度（当前角色无权调度）</el-text>
             </template>
             <template v-else>
               <el-descriptions :column="2" size="small">
@@ -104,11 +110,11 @@
               <div class="stage-title"><span class="stage-index">3</span>到场登记</div>
             </template>
             <template v-if="event.status === 'DISPATCHED' || event.status === 'ARRIVED'">
-              <el-form label-width="90px" size="default">
+              <el-form v-if="can('arrive')" label-width="90px" size="default">
                 <el-form-item label="到场方">
                   <el-radio-group v-model="arriveForm.party">
-                    <el-radio-button value="MAINTENANCE">维保人员</el-radio-button>
-                    <el-radio-button value="FIRE">消防救援</el-radio-button>
+                    <el-radio-button v-if="arriveParties.includes('MAINTENANCE')" value="MAINTENANCE">维保人员</el-radio-button>
+                    <el-radio-button v-if="arriveParties.includes('FIRE')" value="FIRE">消防救援</el-radio-button>
                   </el-radio-group>
                 </el-form-item>
                 <el-form-item label="到场时间">
@@ -120,6 +126,9 @@
                   <span style="margin-left: 10px; font-size: 12px; color: #8a94a8">超过 30 分钟到场将自动标记“维保迟到”</span>
                 </el-form-item>
               </el-form>
+              <el-text v-else type="info" size="small" style="display: block; margin-bottom: 8px">
+                等待维保/消防到场登记（当前角色无权登记）
+              </el-text>
               <el-descriptions v-if="event.maintenanceArrivedAt || event.fireArrivedAt" :column="2" size="small" border>
                 <el-descriptions-item label="维保到场">{{ fmtTime(event.maintenanceArrivedAt) }}</el-descriptions-item>
                 <el-descriptions-item label="消防到场">{{ fmtTime(event.fireArrivedAt) }}</el-descriptions-item>
@@ -135,12 +144,12 @@
           </el-card>
 
           <!-- 4. 救援释放 -->
-          <el-card class="stage-card" :class="{ 'is-done': stageDone('RELEASED'), 'is-disabled': !stageDone('DISPATCHED') }" shadow="never">
+          <el-card class="stage-card" :class="{ 'is-done': stageDone('RELEASED'), 'is-disabled': !stageDone('ARRIVED') }" shadow="never">
             <template #header>
               <div class="stage-title"><span class="stage-index">4</span>困人释放登记</div>
             </template>
-            <template v-if="event.status === 'ARRIVED' || event.status === 'DISPATCHED'">
-              <el-form label-width="100px">
+            <template v-if="releaseOpen">
+              <el-form v-if="can('release')" label-width="100px">
                 <el-row :gutter="12">
                   <el-col :span="12">
                     <el-form-item label="释放时间">
@@ -149,7 +158,7 @@
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
-                    <el-form-item label="开门方式">
+                    <el-form-item label="开门方式" required>
                       <el-select v-model="releaseForm.doorOpenMethod" filterable allow-create style="width: 100%" placeholder="选择或填写">
                         <el-option v-for="m in DOOR_OPEN_METHODS" :key="m" :label="m" :value="m" />
                       </el-select>
@@ -158,17 +167,17 @@
                 </el-row>
                 <el-row :gutter="12">
                   <el-col :span="12">
-                    <el-form-item label="故障代码">
+                    <el-form-item label="故障代码" required>
                       <el-input v-model="releaseForm.faultCode" placeholder="如 E43-门机控制器故障" />
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
-                    <el-form-item label="需要医疗协助">
+                    <el-form-item label="需要医疗协助" required>
                       <el-switch v-model="releaseForm.medicalAssistance" />
                     </el-form-item>
                   </el-col>
                 </el-row>
-                <el-form-item label="乘客身体状态">
+                <el-form-item label="乘客身体状态" required>
                   <el-input v-model="releaseForm.passengerHealth" placeholder="如：乘客情绪稳定，无身体不适" />
                 </el-form-item>
                 <el-form-item label="救援说明">
@@ -178,6 +187,7 @@
                   <el-button type="primary" :loading="acting" @click="doRelease">确认乘客已释放</el-button>
                 </el-form-item>
               </el-form>
+              <el-text v-else type="info" size="small">等待维保人员登记释放（当前角色无权登记）</el-text>
             </template>
             <template v-else-if="stageDone('RELEASED')">
               <el-descriptions :column="2" size="small" border>
@@ -190,7 +200,7 @@
                 <el-descriptions-item v-if="event.rescueNote" label="救援说明" :span="2">{{ event.rescueNote }}</el-descriptions-item>
               </el-descriptions>
             </template>
-            <el-text v-else type="info" size="small">完成通知调度后开放</el-text>
+            <el-text v-else type="info" size="small">维保或消防到场后开放</el-text>
           </el-card>
 
           <!-- 5. 复位复检 -->
@@ -199,7 +209,7 @@
               <div class="stage-title"><span class="stage-index">5</span>复位 / 停梯 / 复检</div>
             </template>
             <template v-if="event.status === 'RELEASED'">
-              <el-form label-width="100px">
+              <el-form v-if="can('reset')" label-width="100px">
                 <el-row :gutter="12">
                   <el-col :span="12">
                     <el-form-item label="复位时间">
@@ -218,13 +228,14 @@
                   <el-switch v-model="resetForm.elevatorStopped" active-text="停梯待检" inactive-text="恢复运行" />
                   <span style="margin-left: 10px; font-size: 12px; color: #8a94a8">停梯后建议同步发布楼栋公告（右侧面板）</span>
                 </el-form-item>
-                <el-form-item label="复检结果">
+                <el-form-item label="复检结果" required>
                   <el-input v-model="resetForm.recheckResult" placeholder="如：复位后试运行正常，故障代码清除" />
                 </el-form-item>
                 <el-form-item>
                   <el-button type="primary" :loading="acting" @click="doReset">确认复位登记</el-button>
                 </el-form-item>
               </el-form>
+              <el-text v-else type="info" size="small">等待维保人员登记复位复检（当前角色无权登记）</el-text>
             </template>
             <template v-else-if="stageDone('RESET')">
               <el-descriptions :column="2" size="small" border>
@@ -247,7 +258,7 @@
               <div class="stage-title"><span class="stage-index">6</span>责任判定与关闭归档</div>
             </template>
             <template v-if="event.status === 'RESET'">
-              <el-form label-width="100px">
+              <el-form v-if="can('close')" label-width="100px">
                 <el-row :gutter="12">
                   <el-col :span="12">
                     <el-form-item label="责任判定" required>
@@ -257,14 +268,14 @@
                     </el-form-item>
                   </el-col>
                   <el-col :span="12">
-                    <el-form-item label="费用承担">
+                    <el-form-item label="费用承担" required>
                       <el-select v-model="closeForm.costBearer" style="width: 100%" clearable>
                         <el-option v-for="(v, k) in COST_BEARER" :key="k" :label="v" :value="k" />
                       </el-select>
                     </el-form-item>
                   </el-col>
                 </el-row>
-                <el-form-item label="责任说明">
+                <el-form-item label="责任说明" required>
                   <el-input v-model="closeForm.responsibilityDetail" placeholder="责任认定依据" />
                 </el-form-item>
                 <el-row :gutter="12">
@@ -292,6 +303,7 @@
                   <el-button type="success" :loading="acting" @click="doClose">确认关闭事件并归档</el-button>
                 </el-form-item>
               </el-form>
+              <el-text v-else type="info" size="small">等待物业值班员责任判定并关闭归档（当前角色无权关闭）</el-text>
             </template>
             <template v-else-if="event.status === 'CLOSED'">
               <el-descriptions :column="2" size="small" border>
@@ -306,7 +318,7 @@
                   <el-tag :type="event.rectificationDone ? 'success' : 'warning'" size="small">
                     {{ event.rectificationDone ? '已完成' : '未完成' }}
                   </el-tag>
-                  <el-button v-if="!event.rectificationDone" size="small" link type="primary" style="margin-left: 8px"
+                  <el-button v-if="!event.rectificationDone && can('rectify')" size="small" link type="primary" style="margin-left: 8px"
                     @click="doRectify(true)">标记完成</el-button>
                 </el-descriptions-item>
                 <el-descriptions-item label="业主通知">{{ event.ownerNotified ? '已通知' : '未通知' }}</el-descriptions-item>
@@ -334,7 +346,7 @@
               <el-table-column prop="feedback" label="反馈内容" />
               <el-table-column prop="followerName" label="回访人" width="80" />
             </el-table>
-            <el-form inline>
+            <el-form v-if="can('followup')" inline>
               <el-form-item label="业主">
                 <el-input v-model="followupForm.ownerName" placeholder="姓名" style="width: 110px" />
               </el-form-item>
@@ -370,7 +382,7 @@
               </div>
               <div style="font-size: 13px; margin-top: 2px">{{ call.content }}</div>
             </div>
-            <template v-if="event.status !== 'CLOSED'">
+            <template v-if="event.status !== 'CLOSED' && can('calls')">
               <el-divider style="margin: 10px 0" />
               <el-input v-model="callForm.passengerState" placeholder="乘客状态（如：情绪平稳）" size="small" style="margin-bottom: 8px" />
               <el-input v-model="callForm.content" type="textarea" :rows="2" placeholder="通话内容" size="small" />
@@ -404,7 +416,7 @@
               </el-table-column>
               <el-table-column label="操作">
                 <template #default="{ row }">
-                  <template v-if="row.status === 'SENT' && event.status !== 'CLOSED'">
+                  <template v-if="row.status === 'SENT' && event.status !== 'CLOSED' && can('notify')">
                     <el-button size="small" link type="success" @click="doNotify(row.id, 'ACKED')">确认</el-button>
                     <el-button size="small" link type="danger" @click="doNotify(row.id, 'UNREACHABLE')">联系不上</el-button>
                   </template>
@@ -477,6 +489,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { useAuthStore } from '../store/auth'
 import {
   EVENT_STATUS, ALARM_SOURCE, CALL_STATUS, RESPONSIBILITY, COST_BEARER,
   NOTIFY_STATUS, ROLE_LABEL, NOTICE_TYPE, DOOR_OPEN_METHODS, EVENT_FLAGS
@@ -485,7 +498,22 @@ import { fmtTime, rescueMinutes, elapsedMinutes } from '../utils/format'
 
 const STATUS_ORDER = ['PENDING', 'DISPATCHED', 'ARRIVED', 'RELEASED', 'RESET', 'CLOSED']
 
+// 与后端一致的操作权限矩阵
+const ROLE_PERMS = {
+  dispatch: ['ADMIN', 'DUTY'],
+  arrive: ['ADMIN', 'DUTY', 'MAINTENANCE', 'FIRE'],
+  release: ['ADMIN', 'DUTY', 'MAINTENANCE'],
+  reset: ['ADMIN', 'DUTY', 'MAINTENANCE'],
+  close: ['ADMIN', 'DUTY'],
+  calls: ['ADMIN', 'DUTY', 'MAINTENANCE', 'BUTLER'],
+  flags: ['ADMIN', 'DUTY', 'MAINTENANCE'],
+  notify: ['ADMIN', 'DUTY', 'MAINTENANCE', 'BUTLER'],
+  followup: ['ADMIN', 'DUTY', 'BUTLER'],
+  rectify: ['ADMIN', 'DUTY']
+}
+
 const route = useRoute()
+const auth = useAuthStore()
 const id = route.params.id
 const loading = ref(false)
 const acting = ref(false)
@@ -495,6 +523,31 @@ const noticeDialog = ref(false)
 const event = computed(() => detail.value?.event)
 const activeFlags = computed(() => EVENT_FLAGS.filter((f) => event.value?.[f.key]))
 const stepActive = computed(() => (event.value ? STATUS_ORDER.indexOf(event.value.status) + 1 : 0))
+
+/** 当前角色可登记的到场方 */
+const arriveParties = computed(() => {
+  const role = auth.user?.role
+  if (role === 'MAINTENANCE') return ['MAINTENANCE']
+  if (role === 'FIRE') return ['FIRE']
+  return ['MAINTENANCE', 'FIRE']
+})
+
+function can(action) {
+  return ROLE_PERMS[action]?.includes(auth.user?.role)
+}
+
+/** 高风险场景：含老人/儿童或通话中断（无法接通/时断时续） → 必须通知消防（与后端口径一致） */
+const fireRequired = computed(() => {
+  const e = event.value
+  if (!e) return false
+  return e.elderlyCount > 0 || e.childrenCount > 0 || e.callStatus === 'LOST' || e.callStatus === 'INTERMITTENT'
+})
+
+/** 释放登记开放条件：维保到场，或消防先到场 */
+const releaseOpen = computed(() => {
+  const e = event.value
+  return !!e && (e.status === 'ARRIVED' || (e.status === 'DISPATCHED' && !!e.fireArrivedAt))
+})
 
 const dispatchForm = reactive({ notifyMaintenance: true, notifySecurity: true, notifyButler: true, notifyFire: false, note: '' })
 const arriveForm = reactive({ party: 'MAINTENANCE', arrivedAt: '' })
@@ -521,6 +574,13 @@ async function load() {
     detail.value = res.data
     EVENT_FLAGS.forEach((f) => { flagsForm[f.key] = !!res.data.event[f.key] })
     flagsForm.compensationDetail = res.data.event.compensationDetail || ''
+    // 高风险场景强制联动消防；消防角色默认登记消防到场
+    if (res.data.event.elderlyCount > 0 || res.data.event.childrenCount > 0 || res.data.event.callStatus === 'LOST') {
+      dispatchForm.notifyFire = true
+    }
+    if (auth.user?.role === 'FIRE') {
+      arriveForm.party = 'FIRE'
+    }
   } finally {
     loading.value = false
   }
@@ -538,12 +598,15 @@ async function act(fn, successMsg) {
 }
 
 function doDispatch() {
-  const f = dispatchForm
-  if (!f.notifyMaintenance && !f.notifySecurity && !f.notifyButler && !f.notifyFire) {
-    ElMessage.warning('请至少选择一方进行通知')
-    return
+  // 维保/保安/楼栋管家为必通知方；高风险场景必须通知消防
+  const payload = {
+    notifyMaintenance: true,
+    notifySecurity: true,
+    notifyButler: true,
+    notifyFire: fireRequired.value ? true : dispatchForm.notifyFire,
+    note: dispatchForm.note
   }
-  act(() => api.post(`/events/${id}/dispatch`, f), '调度通知已发出')
+  act(() => api.post(`/events/${id}/dispatch`, payload), '调度通知已发出')
 }
 
 function doArrive() {
@@ -551,14 +614,30 @@ function doArrive() {
 }
 
 function doRelease() {
+  if (!releaseForm.doorOpenMethod || !releaseForm.faultCode || !releaseForm.passengerHealth) {
+    ElMessage.warning('开门方式、故障代码、乘客身体状态为必填项')
+    return
+  }
   act(() => api.post(`/events/${id}/release`, releaseForm), '乘客释放已登记')
 }
 
 function doReset() {
+  if (!resetForm.recheckResult) {
+    ElMessage.warning('请填写复检结果（归档资料必填）')
+    return
+  }
   act(() => api.post(`/events/${id}/reset`, resetForm), '复位复检已登记')
 }
 
 async function doClose() {
+  if (!closeForm.responsibilityDetail || !closeForm.costBearer) {
+    ElMessage.warning('责任说明与费用承担方为必填项')
+    return
+  }
+  if (['MAINTENANCE', 'JOINT'].includes(closeForm.responsibility) && !closeForm.rectification) {
+    ElMessage.warning('维保责任/共同责任事件必须填写整改要求')
+    return
+  }
   await ElMessageBox.confirm('关闭后事件进入档案，不可再处置，确认关闭？', '关闭事件', { type: 'warning' })
   act(() => api.post(`/events/${id}/close`, closeForm), '事件已关闭归档')
 }

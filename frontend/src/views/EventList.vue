@@ -4,7 +4,7 @@
       <template #header>
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px">
           <span>困人事件管理</span>
-          <el-button type="danger" @click="$router.push('/events/new')">
+          <el-button v-if="['ADMIN', 'DUTY'].includes(auth.user?.role)" type="danger" @click="$router.push('/events/new')">
             <el-icon style="margin-right: 4px"><Plus /></el-icon>接警登记
           </el-button>
         </div>
@@ -91,10 +91,12 @@
 import { onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api'
+import { useAuthStore } from '../store/auth'
 import { ALARM_SOURCE, EVENT_STATUS, EVENT_FLAGS, RESPONSIBILITY } from '../utils/dict'
 import { fmtTime, rescueMinutes, elapsedMinutes } from '../utils/format'
 
 const route = useRoute()
+const auth = useAuthStore()
 const loading = ref(false)
 const events = ref([])
 const buildings = ref([])
