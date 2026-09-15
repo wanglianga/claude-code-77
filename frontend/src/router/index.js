@@ -12,6 +12,7 @@ const routes = [
       { path: 'events/new', name: 'event-new', component: () => import('../views/EventCreate.vue'), meta: { title: '接警登记' } },
       { path: 'events/:id', name: 'event-detail', component: () => import('../views/EventDetail.vue'), meta: { title: '事件处置' } },
       { path: 'elevators', name: 'elevators', component: () => import('../views/ElevatorManage.vue'), meta: { title: '电梯与维保档案' } },
+      { path: 'rectification', name: 'rectification', component: () => import('../views/Rectification.vue'), meta: { title: '停梯整改与老人帮扶' } },
       { path: 'complaints', name: 'complaints', component: () => import('../views/Complaints.vue'), meta: { title: '业主投诉' } },
       { path: 'duty', name: 'duty', component: () => import('../views/DutySchedule.vue'), meta: { title: '物业值班表' } },
       { path: 'notices', name: 'notices', component: () => import('../views/Notices.vue'), meta: { title: '楼栋公告' } },

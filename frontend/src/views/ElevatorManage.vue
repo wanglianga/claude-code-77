@@ -10,8 +10,13 @@
           <el-button type="primary" @click="openElevatorDialog()">新增电梯</el-button>
         </div>
         <el-table :data="filteredElevators" v-loading="loading">
-          <el-table-column prop="code" label="电梯编号" width="110">
-            <template #default="{ row }"><span class="mono">{{ row.code }}</span></template>
+          <el-table-column prop="code" label="电梯编号" width="130">
+            <template #default="{ row }">
+              <span class="mono">{{ row.code }}</span>
+              <el-tooltip v-if="repeatFaultIds.includes(row.id)" content="一周内多次困人，请前往「停梯整改与帮扶」处理" placement="top">
+                <el-tag type="danger" size="small" style="margin-left: 4px">反复故障</el-tag>
+              </el-tooltip>
+            </template>
           </el-table-column>
           <el-table-column label="楼栋 / 位置" width="180">
             <template #default="{ row }">{{ row.building?.name }} {{ row.position }}</template>
@@ -402,6 +407,7 @@ const contracts = ref([])
 const inspections = ref([])
 const parts = ref([])
 const elevatorFilter = ref(null)
+const repeatFaultIds = ref([])
 
 const elevatorDialog = ref(false)
 const elevatorDrawer = ref(false)
@@ -438,6 +444,13 @@ async function loadAll() {
     contracts.value = ct.data
     inspections.value = ins.data
     parts.value = p.data
+    // 反复故障电梯标记（一周内 ≥2 次困人）
+    try {
+      const rf = await api.get('/elevators/repeat-faults')
+      repeatFaultIds.value = rf.data.map((item) => item.elevator.id)
+    } catch {
+      repeatFaultIds.value = []
+    }
   } finally {
     loading.value = false
   }

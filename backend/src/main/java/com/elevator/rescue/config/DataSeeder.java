@@ -35,6 +35,8 @@ public class DataSeeder implements CommandLineRunner {
     private final DutyScheduleRepository dutyRepo;
     private final BuildingNoticeRepository noticeRepo;
     private final OwnerFollowupRepository followupRepo;
+    private final RectificationPlanRepository planRepo;
+    private final ElderlyAssistanceRepository assistanceRepo;
     private final PasswordEncoder passwordEncoder;
 
     @Override
@@ -229,6 +231,49 @@ public class DataSeeder implements CommandLineRunner {
                 "约 40 岁", false, false, false, true);
         call(ev7, duty2, LocalDateTime.now().minusMinutes(5), "乘客情绪平稳", "再次确认轿厢通风正常，乘客无不适",
                 "约 40 岁", false, false, false, true);
+
+        // ---------- 近 7 天反复故障（DT-2-1，含今日 EV-001 共 3 起） ----------
+        closedEvent("EV" + LocalDate.now().minusDays(3).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd")) + "-901",
+                e21, b2, RescueEvent.AlarmSource.IOT,
+                LocalDateTime.now().minusDays(3).withHour(9).withMinute(20).withSecond(0).withNano(0), "14 层", 2, 0, 0,
+                26, "松闸盘车平层开门", "E21-安全回路断开", "乘客无不适", false,
+                RescueEvent.Responsibility.MAINTENANCE, "安全回路触点再次失效",
+                RescueEvent.CostBearer.MAINTENANCE, new BigDecimal("0"),
+                "更换安全回路触点组件", LocalDate.now().plusDays(4), false,
+                duty1, maint2, sec1, butler2, null, 24, false, true, false);
+        closedEvent("EV" + LocalDate.now().minusDays(5).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd")) + "-901",
+                e21, b2, RescueEvent.AlarmSource.PHONE,
+                LocalDateTime.now().minusDays(5).withHour(18).withMinute(45).withSecond(0).withNano(0), "6 层", 3, 1, 0,
+                31, "检修运行至平层开门", "E21-安全回路断开", "老人略受惊吓", false,
+                RescueEvent.Responsibility.MAINTENANCE, "安全回路老化，一周内第二次困人",
+                RescueEvent.CostBearer.MAINTENANCE, new BigDecimal("0"),
+                "全面排查安全回路", LocalDate.now().plusDays(2), false,
+                duty2, maint2, sec1, butler2, null, 28, false, true, false);
+
+        // ---------- DT-3-2 停梯整改方案（已提交，待复检） ----------
+        e32.setStoppedSince(LocalDateTime.now().minusDays(2));
+        elevatorRepo.save(e32);
+        RectificationPlan plan = new RectificationPlan();
+        plan.setElevator(e32);
+        plan.setEventId(ev4.getId());
+        plan.setCompanyName(c2.getName());
+        plan.setRequestNote("困人事件后年检整改项未落实，要求提交彻底整改方案");
+        plan.setRequestedBy(duty2.getRealName());
+        plan.setRequestedAt(LocalDateTime.now().minusDays(2));
+        plan.setStatus(RectificationPlan.PlanStatus.SUBMITTED);
+        plan.setParts("门锁触点组件 ×2、门机控制板 ×1");
+        plan.setExpectedArrival(LocalDate.now().plusDays(3));
+        plan.setRecheckInspector("市特种设备检验研究院 李工");
+        plan.setNoticePublishTime(LocalDateTime.now().plusDays(4));
+        plan.setPlanDetail("更换门锁触点组件与门机控制板，全检门系统与安全回路，复检合格后恢复运行。");
+        plan.setSubmittedBy(maint2.getRealName());
+        plan.setSubmittedAt(LocalDateTime.now().minusDays(1));
+        planRepo.save(plan);
+
+        // ---------- 停梯期间老人帮扶登记 ----------
+        assistance(b3, e32, "张桂英", "3 栋 1502", "13611110001", "每周二、五上午去医院透析，需协助上下楼", "物业客服小李", "13500000101", true);
+        assistance(b3, e32, "王德发", "3 栋 0901", "13611110002", "每日买菜需协助搬运上楼", "保安刘建国", "13500000006", true);
+        assistance(b3, e32, "刘淑芬", "3 栋 1103", "13611110003", "临时下楼取药一次", "楼栋管家吴凯", "13800001103", false);
 
         // ---------- 业主投诉 ----------
         complaint(e21, ev2.getId(), "王秀兰", "13600000010", b2.getName(),
@@ -537,5 +582,23 @@ public class DataSeeder implements CommandLineRunner {
         f.setFeedback(feedback);
         f.setFollowerName(follower.getRealName());
         followupRepo.save(f);
+    }
+
+    private void assistance(Building building, Elevator elevator, String residentName, String roomNo,
+                            String phone, String need, String helperName, String helperPhone, boolean active) {
+        ElderlyAssistance a = new ElderlyAssistance();
+        a.setBuilding(building);
+        a.setElevator(elevator);
+        a.setResidentName(residentName);
+        a.setRoomNo(roomNo);
+        a.setPhone(phone);
+        a.setNeedDescription(need);
+        a.setHelperName(helperName);
+        a.setHelperPhone(helperPhone);
+        a.setStatus(active ? ElderlyAssistance.AssistanceStatus.ACTIVE : ElderlyAssistance.AssistanceStatus.RESOLVED);
+        if (!active) {
+            a.setResolvedAt(LocalDateTime.now().minusHours(6));
+        }
+        assistanceRepo.save(a);
     }
 }

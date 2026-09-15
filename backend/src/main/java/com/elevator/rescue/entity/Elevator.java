@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.Data;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 @Data
 @Entity
@@ -52,4 +53,7 @@ public class Elevator {
     @Enumerated(EnumType.STRING)
     @Column(length = 20)
     private ElevatorStatus status = ElevatorStatus.RUNNING;
+
+    /** 本次停梯开始时间（恢复运行时清空），用于统计停梯时长 */
+    private LocalDateTime stoppedSince;
 }

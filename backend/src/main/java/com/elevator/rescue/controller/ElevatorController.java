@@ -45,6 +45,13 @@ public class ElevatorController {
         Elevator existing = elevatorRepo.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("电梯不存在"));
         elevator.setId(existing.getId());
+        // 停梯计时：状态切换到停梯时记录开始时间，恢复时清空
+        if (elevator.getStatus() == Elevator.ElevatorStatus.STOPPED) {
+            elevator.setStoppedSince(existing.getStoppedSince() != null
+                    ? existing.getStoppedSince() : java.time.LocalDateTime.now());
+        } else {
+            elevator.setStoppedSince(null);
+        }
         return elevatorRepo.save(elevator);
     }
 

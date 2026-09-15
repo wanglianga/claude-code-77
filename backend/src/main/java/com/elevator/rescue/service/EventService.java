@@ -376,8 +376,15 @@ public class EventService {
         e.setStatus(EventStatus.RESET);
 
         Elevator elevator = e.getElevator();
-        elevator.setStatus(Boolean.TRUE.equals(req.elevatorStopped())
-                ? Elevator.ElevatorStatus.STOPPED : Elevator.ElevatorStatus.RUNNING);
+        if (Boolean.TRUE.equals(req.elevatorStopped())) {
+            elevator.setStatus(Elevator.ElevatorStatus.STOPPED);
+            if (elevator.getStoppedSince() == null) {
+                elevator.setStoppedSince(LocalDateTime.now());
+            }
+        } else {
+            elevator.setStatus(Elevator.ElevatorStatus.RUNNING);
+            elevator.setStoppedSince(null);
+        }
         elevatorRepo.save(elevator);
 
         log(e, operator.getRealName(), "复位复检",

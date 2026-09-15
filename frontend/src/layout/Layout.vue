@@ -18,6 +18,10 @@
           <el-icon><OfficeBuilding /></el-icon>
           <span>电梯与维保档案</span>
         </el-menu-item>
+        <el-menu-item index="/rectification">
+          <el-icon><Tools /></el-icon>
+          <span>停梯整改与帮扶</span>
+        </el-menu-item>
         <el-menu-item index="/complaints">
           <el-icon><ChatDotSquare /></el-icon>
           <span>业主投诉</span>
