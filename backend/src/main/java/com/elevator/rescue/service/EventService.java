@@ -35,6 +35,14 @@ public class EventService {
     @Value("${app.arrive-limit-minutes:30}")
     private int arriveLimitMinutes;
 
+    /** 救援超时提醒阈值（分钟）：超过仍未释放 → 提醒联系 120 / 消防优先介入 */
+    @Value("${app.rescue-alert-minutes:30}")
+    private int rescueAlertMinutes;
+
+    /** 通话间隔提醒阈值（分钟）：超过未与乘客通话 → 提醒保持通话频率 */
+    @Value("${app.call-remind-minutes:10}")
+    private int callRemindMinutes;
+
     public RescueEvent get(Long id) {
         return eventRepo.findById(id).orElseThrow(() -> new IllegalArgumentException("事件不存在: " + id));
     }
@@ -220,14 +228,63 @@ public class EventService {
         call.setCallTime(req.callTime() != null ? req.callTime() : LocalDateTime.now());
         call.setPassengerState(req.passengerState());
         call.setContent(req.content());
+        // 乘客健康安抚信息
+        call.setPassengerAge(req.passengerAge());
+        call.setPanic(Boolean.TRUE.equals(req.panic()));
+        call.setHeartDisease(Boolean.TRUE.equals(req.heartDisease()));
+        call.setPregnant(Boolean.TRUE.equals(req.pregnant()));
+        call.setStateClear(req.stateClear() == null || req.stateClear());
         callRepo.save(call);
 
         if (req.callStatus() != null) {
             e.setCallStatus(req.callStatus());
         }
+
+        StringBuilder health = new StringBuilder();
+        if (Boolean.TRUE.equals(call.getPanic())) {
+            health.append("、恐慌");
+        }
+        if (Boolean.TRUE.equals(call.getHeartDisease())) {
+            health.append("、心脏病");
+        }
+        if (Boolean.TRUE.equals(call.getPregnant())) {
+            health.append("、孕妇");
+        }
         log(e, caller.getRealName(), "通话安抚",
-                "与轿厢乘客通话，乘客状态: " + (req.passengerState() != null ? req.passengerState() : "未记录"));
+                "与轿厢乘客通话，乘客状态: " + (req.passengerState() != null ? req.passengerState() : "未记录")
+                        + (health.length() > 0 ? "；健康风险: " + health.substring(1) : "")
+                        + (Boolean.FALSE.equals(call.getStateClear()) ? "；乘客无法清楚描述状态" : ""));
+
+        // 乘客无法清楚描述状态 → 自动提示值班员保持通话，并通知保安现场确认（每事件一次）
+        if (Boolean.FALSE.equals(call.getStateClear())) {
+            autoNotifySecurityOnce(e,
+                    "【自动提醒】乘客无法清楚描述状态：值班员请保持通话，请保安到现场确认轿厢声音和楼层");
+        }
+        // 通话中断 → 自动提示物业重拨，并通知保安确认轿厢内回应（每事件一次）
+        if (e.getCallStatus() == RescueEvent.CallStatus.LOST) {
+            autoNotifySecurityOnce(e,
+                    "【自动提醒】通话中断：物业将立即再次拨打轿厢通话，请现场保安确认轿厢内回应");
+        }
         return e;
+    }
+
+    /** 自动向保安推送一次现场处置提醒（同一事件同一提醒不重复） */
+    private void autoNotifySecurityOnce(RescueEvent e, String note) {
+        boolean exists = notificationRepo.findByEventIdOrderByNotifiedAtAsc(e.getId()).stream()
+                .anyMatch(n -> note.equals(n.getNote()));
+        if (exists) {
+            return;
+        }
+        User security = userRepo.findByRole(Role.SECURITY).stream().findFirst().orElse(null);
+        EventNotification n = new EventNotification();
+        n.setEvent(e);
+        n.setTargetRole(Role.SECURITY);
+        n.setTargetName(security != null ? security.getRealName() : "保安");
+        n.setTargetPhone(security != null ? security.getPhone() : null);
+        n.setNotifiedAt(LocalDateTime.now());
+        n.setNote(note);
+        notificationRepo.save(n);
+        log(e, "系统", "自动提醒", note);
     }
 
     // ---------------- 到场登记 ----------------
@@ -466,16 +523,118 @@ public class EventService {
     public Map<String, Object> getDetail(Long id, User user) {
         RescueEvent e = get(id);
         checkReadScope(user, e);
+        List<EventCall> calls = callRepo.findByEventIdOrderByCallTimeAsc(id);
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("event", e);
-        detail.put("calls", callRepo.findByEventIdOrderByCallTimeAsc(id));
+        detail.put("calls", calls);
         detail.put("notifications", notificationRepo.findByEventIdOrderByNotifiedAtAsc(id));
         detail.put("logs", logRepo.findByEventIdOrderByCreatedAtAsc(id));
         detail.put("followups", followupRepo.findByEventIdOrderByFollowupTimeAsc(id));
         detail.put("notices", noticeRepo.findByEventIdOrderByPublishedAtDesc(id));
         detail.put("complaints", complaintRepo.findByEventId(id));
         detail.put("parts", partRepo.findByEventId(id));
+        // 健康安抚：实时提醒 + 安抚过程摘要（回访/归档可见）
+        detail.put("healthAlerts", buildHealthAlerts(e, calls));
+        detail.put("comfortSummary", buildComfortSummary(calls));
         return detail;
+    }
+
+    /**
+     * 健康安抚提醒（按事件当前状态与通话记录实时计算，不落库）：
+     * 救援超时 → 提醒联系 120 / 消防优先介入；通话中断 → 提醒重拨并让保安确认回应；
+     * 乘客描述不清 → 提醒保持通话并让保安现场确认；恐慌/心脏病/孕妇 → 医疗风险提示；
+     * 通话间隔过长 → 提醒保持通话频率。
+     */
+    private List<Map<String, String>> buildHealthAlerts(RescueEvent e, List<EventCall> calls) {
+        List<Map<String, String>> alerts = new ArrayList<>();
+        boolean active = e.getStatus() != EventStatus.RELEASED && e.getStatus() != EventStatus.RESET
+                && e.getStatus() != EventStatus.CLOSED;
+        if (!active) {
+            return alerts;
+        }
+        LocalDateTime now = LocalDateTime.now();
+
+        // 1. 救援超时未释放
+        if (e.getAlarmTime() != null && Duration.between(e.getAlarmTime(), now).toMinutes() > rescueAlertMinutes) {
+            alerts.add(alert("error", "RESCUE_OVERTIME",
+                    "被困已超过 " + rescueAlertMinutes + " 分钟未释放（当前 "
+                            + Duration.between(e.getAlarmTime(), now).toMinutes()
+                            + " 分钟）：请立即联系 120 医疗待命，并协调消防优先介入"));
+        }
+        // 2. 通话中断
+        if (e.getCallStatus() == RescueEvent.CallStatus.LOST) {
+            alerts.add(alert("error", "CALL_LOST",
+                    "通话中断：请立即再次拨打轿厢通话，并让现场保安确认轿厢内回应"));
+        }
+        // 3. 乘客无法清楚描述状态（以最近一次通话为准）
+        if (!calls.isEmpty() && Boolean.FALSE.equals(calls.get(calls.size() - 1).getStateClear())) {
+            alerts.add(alert("warning", "UNCLEAR_STATE",
+                    "乘客无法清楚描述状态：请值班员保持通话，并让保安到现场确认轿厢声音和楼层"));
+        }
+        // 4. 健康风险（恐慌 / 心脏病 / 孕妇）
+        boolean panic = calls.stream().anyMatch(c -> Boolean.TRUE.equals(c.getPanic()));
+        boolean heart = calls.stream().anyMatch(c -> Boolean.TRUE.equals(c.getHeartDisease()));
+        boolean pregnant = calls.stream().anyMatch(c -> Boolean.TRUE.equals(c.getPregnant()));
+        if (panic) {
+            alerts.add(alert("warning", "PANIC",
+                    "乘客出现恐慌情绪：请保持安抚、缩短通话间隔，并加快救援进度"));
+        }
+        if (heart || pregnant) {
+            List<String> risks = new ArrayList<>();
+            if (heart) {
+                risks.add("心脏病");
+            }
+            if (pregnant) {
+                risks.add("孕妇");
+            }
+            alerts.add(alert("error", "MEDICAL_RISK",
+                    "轿厢内有" + String.join("、", risks) + "乘客：建议提前联系 120 医疗待命，救援动作从缓从稳"));
+        }
+        // 5. 通话频率提醒
+        if (calls.isEmpty()) {
+            if (e.getAlarmTime() != null && Duration.between(e.getAlarmTime(), now).toMinutes() > callRemindMinutes) {
+                alerts.add(alert("warning", "NO_CALL",
+                        "接警后尚未与乘客通话安抚：请立即拨打轿厢通话，确认乘客状态"));
+            }
+        } else {
+            LocalDateTime lastCall = calls.get(calls.size() - 1).getCallTime();
+            if (lastCall != null && Duration.between(lastCall, now).toMinutes() > callRemindMinutes) {
+                alerts.add(alert("warning", "CALL_INTERVAL",
+                        "已超过 " + callRemindMinutes + " 分钟未与乘客通话：请保持通话频率，持续安抚"));
+            }
+        }
+        return alerts;
+    }
+
+    private Map<String, String> alert(String level, String type, String message) {
+        Map<String, String> a = new LinkedHashMap<>();
+        a.put("level", level);
+        a.put("type", type);
+        a.put("message", message);
+        return a;
+    }
+
+    /** 安抚过程摘要：通话次数、通话频率、健康风险标记，供回访与归档查看 */
+    private Map<String, Object> buildComfortSummary(List<EventCall> calls) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("callCount", calls.size());
+        Double callsPerHour = null;
+        Long avgInterval = null;
+        if (calls.size() >= 2) {
+            LocalDateTime first = calls.get(0).getCallTime();
+            LocalDateTime last = calls.get(calls.size() - 1).getCallTime();
+            long spanMinutes = Math.max(1, Duration.between(first, last).toMinutes());
+            callsPerHour = Math.round(calls.size() * 60.0 / spanMinutes * 10.0) / 10.0;
+            avgInterval = Math.round(spanMinutes * 1.0 / (calls.size() - 1));
+        }
+        summary.put("callsPerHour", callsPerHour);
+        summary.put("avgIntervalMinutes", avgInterval);
+        summary.put("lastCallTime", calls.isEmpty() ? null : calls.get(calls.size() - 1).getCallTime());
+        summary.put("panic", calls.stream().anyMatch(c -> Boolean.TRUE.equals(c.getPanic())));
+        summary.put("heartDisease", calls.stream().anyMatch(c -> Boolean.TRUE.equals(c.getHeartDisease())));
+        summary.put("pregnant", calls.stream().anyMatch(c -> Boolean.TRUE.equals(c.getPregnant())));
+        summary.put("unclearState", calls.stream().anyMatch(c -> Boolean.FALSE.equals(c.getStateClear())));
+        return summary;
     }
 
     // ---------------- 内部方法 ----------------

@@ -34,3 +34,7 @@ app:
   jwt-expire-hours: ${JWT_EXPIRE_HOURS:12}
   # 维保单位到场时限（分钟），超时自动标记“维保迟到”
   arrive-limit-minutes: ${ARRIVE_LIMIT_MINUTES:30}
+  # 救援超时提醒阈值（分钟）：超过未释放提醒联系 120 / 消防优先介入
+  rescue-alert-minutes: ${RESCUE_ALERT_MINUTES:30}
+  # 通话间隔提醒阈值（分钟）：超过未通话提醒保持通话频率
+  call-remind-minutes: ${CALL_REMIND_MINUTES:10}

@@ -29,6 +29,13 @@
         </div>
       </div>
 
+      <!-- 健康安抚实时提醒 -->
+      <div v-if="(detail.healthAlerts || []).length > 0" style="margin-bottom: 14px">
+        <el-alert v-for="(alert, i) in detail.healthAlerts" :key="i"
+          :type="alert.level === 'error' ? 'error' : 'warning'"
+          :title="alert.message" show-icon :closable="false" style="margin-bottom: 8px" />
+      </div>
+
       <!-- 进度条 -->
       <el-card class="stage-card" shadow="never">
         <el-steps :active="stepActive" align-center finish-status="success">
@@ -333,8 +340,20 @@
           <!-- 7. 善后跟踪（关闭后） -->
           <el-card v-if="event.status === 'CLOSED'" class="stage-card" shadow="never">
             <template #header>
-              <div class="stage-title"><span class="stage-index">7</span>善后跟踪：业主回访</div>
+              <div class="stage-title"><span class="stage-index">7</span>善后跟踪：安抚过程与业主回访</div>
             </template>
+            <el-descriptions :column="4" size="small" border style="margin-bottom: 12px">
+              <el-descriptions-item label="安抚通话">{{ comfort.callCount ?? 0 }} 次</el-descriptions-item>
+              <el-descriptions-item label="通话频率">{{ comfort.callsPerHour ?? '—' }} 次/小时</el-descriptions-item>
+              <el-descriptions-item label="平均间隔">{{ comfort.avgIntervalMinutes ?? '—' }} 分钟</el-descriptions-item>
+              <el-descriptions-item label="健康风险">
+                <el-tag v-if="comfort.panic" type="warning" size="small" class="flag-tag">恐慌</el-tag>
+                <el-tag v-if="comfort.heartDisease" type="danger" size="small" class="flag-tag">心脏病</el-tag>
+                <el-tag v-if="comfort.pregnant" type="danger" size="small" class="flag-tag">孕妇</el-tag>
+                <el-tag v-if="comfort.unclearState" type="info" size="small" class="flag-tag">曾描述不清</el-tag>
+                <span v-if="!comfort.panic && !comfort.heartDisease && !comfort.pregnant && !comfort.unclearState">无</span>
+              </el-descriptions-item>
+            </el-descriptions>
             <el-table :data="detail.followups || []" size="small" style="margin-bottom: 12px">
               <el-table-column prop="ownerName" label="回访对象" width="100" />
               <el-table-column label="回访时间" width="150">
@@ -371,25 +390,44 @@
           <!-- 通话安抚 -->
           <el-card class="stage-card" shadow="never">
             <template #header>
-              <div class="stage-title">📞 通话安抚记录</div>
+              <div class="stage-title">📞 通话安抚与健康记录</div>
             </template>
+            <div v-if="comfort.callCount" style="font-size: 12px; color: #5a6478; background: #f6f8fc; border-radius: 6px; padding: 6px 10px; margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 12px">
+              <span>已通话 <b>{{ comfort.callCount }}</b> 次</span>
+              <span v-if="comfort.callsPerHour != null">频率 <b>{{ comfort.callsPerHour }}</b> 次/小时</span>
+              <span v-if="comfort.avgIntervalMinutes != null">平均间隔 <b>{{ comfort.avgIntervalMinutes }}</b> 分钟</span>
+              <span v-if="comfort.lastCallTime">最近 {{ fmtTime(comfort.lastCallTime, 'MM-DD HH:mm') }}</span>
+            </div>
             <div v-if="(detail.calls || []).length === 0" style="color: #8a94a8; font-size: 13px; margin-bottom: 10px">
               暂无通话记录
             </div>
             <div v-for="call in detail.calls || []" :key="call.id" style="border-left: 3px solid #2563eb; padding: 4px 10px; margin-bottom: 10px; background: #f6f8fc; border-radius: 4px">
               <div style="font-size: 12px; color: #8a94a8">
-                {{ fmtTime(call.callTime, 'MM-DD HH:mm') }} ｜ {{ call.caller?.realName }} ｜ {{ call.passengerState }}
+                {{ fmtTime(call.callTime, 'MM-DD HH:mm') }} ｜ {{ call.caller?.realName }} ｜ {{ call.passengerState || '状态未记录' }}<template v-if="call.passengerAge"> ｜ {{ call.passengerAge }}</template>
               </div>
               <div style="font-size: 13px; margin-top: 2px">{{ call.content }}</div>
+              <div v-if="call.panic || call.heartDisease || call.pregnant || call.stateClear === false" style="margin-top: 4px">
+                <el-tag v-if="call.panic" type="warning" size="small" effect="plain" class="flag-tag">恐慌</el-tag>
+                <el-tag v-if="call.heartDisease" type="danger" size="small" effect="plain" class="flag-tag">心脏病</el-tag>
+                <el-tag v-if="call.pregnant" type="danger" size="small" effect="plain" class="flag-tag">孕妇</el-tag>
+                <el-tag v-if="call.stateClear === false" type="info" size="small" effect="plain" class="flag-tag">描述不清</el-tag>
+              </div>
             </div>
             <template v-if="event.status !== 'CLOSED' && can('calls')">
               <el-divider style="margin: 10px 0" />
               <el-input v-model="callForm.passengerState" placeholder="乘客状态（如：情绪平稳）" size="small" style="margin-bottom: 8px" />
-              <el-input v-model="callForm.content" type="textarea" :rows="2" placeholder="通话内容" size="small" />
+              <el-input v-model="callForm.passengerAge" placeholder="乘客年龄（如：约 65 岁，可空）" size="small" style="margin-bottom: 8px" />
+              <div style="margin-bottom: 8px">
+                <el-checkbox v-model="callForm.panic" label="恐慌" size="small" />
+                <el-checkbox v-model="callForm.heartDisease" label="心脏病" size="small" />
+                <el-checkbox v-model="callForm.pregnant" label="孕妇" size="small" />
+                <el-checkbox v-model="callForm.stateClear" label="能清楚描述" size="small" />
+              </div>
+              <el-input v-model="callForm.content" type="textarea" :rows="2" placeholder="安抚内容（必填）" size="small" />
               <el-select v-model="callForm.callStatus" size="small" style="width: 100%; margin-top: 8px" placeholder="更新通话状态">
                 <el-option label="通话顺畅" value="SMOOTH" />
-                <el-option label="时断时续" value="INTERMITTENT" />
-                <el-option label="无法接通" value="LOST" />
+                <el-option label="时断时续（高风险，需通知消防）" value="INTERMITTENT" />
+                <el-option label="无法接通（触发保安现场确认）" value="LOST" />
               </el-select>
               <el-button type="primary" size="small" style="margin-top: 8px; width: 100%" :loading="acting" @click="doAddCall">
                 记录通话
@@ -523,6 +561,8 @@ const noticeDialog = ref(false)
 const event = computed(() => detail.value?.event)
 const activeFlags = computed(() => EVENT_FLAGS.filter((f) => event.value?.[f.key]))
 const stepActive = computed(() => (event.value ? STATUS_ORDER.indexOf(event.value.status) + 1 : 0))
+/** 安抚过程摘要（通话次数/频率/健康风险） */
+const comfort = computed(() => detail.value?.comfortSummary || {})
 
 /** 当前角色可登记的到场方 */
 const arriveParties = computed(() => {
@@ -564,7 +604,7 @@ const arriveForm = reactive({ party: 'MAINTENANCE', arrivedAt: '' })
 const releaseForm = reactive({ releasedAt: '', doorOpenMethod: '', faultCode: '', passengerHealth: '', medicalAssistance: false, rescueNote: '' })
 const resetForm = reactive({ resetAt: '', elevatorStopped: false, recheckedAt: '', recheckResult: '' })
 const closeForm = reactive({ responsibility: 'MAINTENANCE', responsibilityDetail: '', costBearer: null, costAmount: null, rectification: '', rectificationDeadline: '', ownerNotified: false, closeRemark: '' })
-const callForm = reactive({ passengerState: '', content: '', callStatus: '' })
+const callForm = reactive({ passengerState: '', passengerAge: '', content: '', callStatus: '', panic: false, heartDisease: false, pregnant: false, stateClear: true })
 const flagsForm = reactive({})
 const followupForm = reactive({ ownerName: '', ownerPhone: '', satisfaction: 5, feedback: '' })
 const noticeForm = reactive({ type: 'STOP_NOTICE', title: '', content: '' })
@@ -661,6 +701,11 @@ function doAddCall() {
     await api.post(`/events/${id}/calls`, { ...callForm, callStatus: callForm.callStatus || null })
     callForm.content = ''
     callForm.passengerState = ''
+    callForm.passengerAge = ''
+    callForm.panic = false
+    callForm.heartDisease = false
+    callForm.pregnant = false
+    callForm.stateClear = true
   }, '通话已记录')
 }
 

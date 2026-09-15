@@ -166,6 +166,14 @@ public class DataSeeder implements CommandLineRunner {
                 "更换平层感应器，纳入下年度大修计划评估", LocalDate.of(2026, 9, 5), true,
                 duty1, maint1, sec1, butler1, null, 15, false, false, false);
 
+        // ---------- 历史事件健康安抚补充记录 ----------
+        call(ev2, duty2, LocalDateTime.of(2026, 7, 2, 19, 12), "老人情绪紧张，呼吸急促",
+                "安抚老人，指导缓慢深呼吸，告知维保与保安已在途中", "约 68 岁", true, true, false, true);
+        call(ev2, duty2, LocalDateTime.of(2026, 7, 2, 19, 40), "老人情绪逐渐平稳",
+                "持续安抚，确认无胸闷症状，准备配合开门", "约 68 岁", false, true, false, true);
+        call(ev4, duty2, LocalDateTime.of(2026, 8, 10, 21, 22), "儿童哭闹，家长焦急",
+                "安抚家长与儿童，告知消防已到场协助", "儿童 5 岁", true, false, false, true);
+
         // ---------- 进行中事件 ----------
         // 6. 今日新报警：DT-2-1（反复故障电梯），待调度
         RescueEvent ev6 = new RescueEvent();
@@ -217,8 +225,10 @@ public class DataSeeder implements CommandLineRunner {
         notification(ev7, User.Role.MAINTENANCE, "王强", "400-800-1101", notifiedAt, true);
         notification(ev7, User.Role.SECURITY, "刘建国", "13500000006", notifiedAt, true);
         notification(ev7, User.Role.BUTLER, "吴凯", "13800001103", notifiedAt, false);
-        call(ev7, duty2, LocalDateTime.now().minusMinutes(15), "乘客情绪平稳", "告知维保人员已出发，请勿扒门，保持镇定");
-        call(ev7, duty2, LocalDateTime.now().minusMinutes(5), "乘客情绪平稳", "再次确认轿厢通风正常，乘客无不适");
+        call(ev7, duty2, LocalDateTime.now().minusMinutes(15), "乘客情绪平稳", "告知维保人员已出发，请勿扒门，保持镇定",
+                "约 40 岁", false, false, false, true);
+        call(ev7, duty2, LocalDateTime.now().minusMinutes(5), "乘客情绪平稳", "再次确认轿厢通风正常，乘客无不适",
+                "约 40 岁", false, false, false, true);
 
         // ---------- 业主投诉 ----------
         complaint(e21, ev2.getId(), "王秀兰", "13600000010", b2.getName(),
@@ -443,12 +453,22 @@ public class DataSeeder implements CommandLineRunner {
     }
 
     private void call(RescueEvent e, User caller, LocalDateTime time, String state, String content) {
+        call(e, caller, time, state, content, null, false, false, false, true);
+    }
+
+    private void call(RescueEvent e, User caller, LocalDateTime time, String state, String content,
+                      String age, boolean panic, boolean heart, boolean pregnant, boolean stateClear) {
         EventCall c = new EventCall();
         c.setEvent(e);
         c.setCaller(caller);
         c.setCallTime(time);
         c.setPassengerState(state);
         c.setContent(content);
+        c.setPassengerAge(age);
+        c.setPanic(panic);
+        c.setHeartDisease(heart);
+        c.setPregnant(pregnant);
+        c.setStateClear(stateClear);
         callRepo.save(c);
     }
 

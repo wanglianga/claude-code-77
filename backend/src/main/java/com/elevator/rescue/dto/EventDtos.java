@@ -40,7 +40,12 @@ public class EventDtos {
             LocalDateTime callTime,
             String passengerState,
             @NotBlank(message = "请填写通话内容") String content,
-            CallStatus callStatus) {
+            CallStatus callStatus,
+            String passengerAge,
+            Boolean panic,
+            Boolean heartDisease,
+            Boolean pregnant,
+            Boolean stateClear) {
     }
 
     public record ArriveRequest(
