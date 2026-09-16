@@ -368,6 +368,35 @@
           </el-timeline-item>
         </el-timeline>
         <el-empty v-if="detail.versions.length === 0" description="尚未提交方案版本" :image-size="60" />
+
+        <el-divider content-position="left" style="margin: 12px 0">
+          公告联动（围绕本整改单，{{ detail.notices.length }} 条；已撤回公告保留可审计）
+        </el-divider>
+        <el-table :data="detail.notices" size="small">
+          <el-table-column label="类型" width="90">
+            <template #default="{ row }">
+              <el-tag :type="NOTICE_TYPE[row.type]?.type" size="small">{{ NOTICE_TYPE[row.type]?.label }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="title" label="标题" min-width="190" show-overflow-tooltip />
+          <el-table-column label="状态" width="76">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'PUBLISHED' ? 'success' : 'info'" size="small">
+                {{ row.status === 'PUBLISHED' ? '有效' : '已撤回' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="发布时间" width="135">
+            <template #default="{ row }">{{ fmtTime(row.publishedAt) }}</template>
+          </el-table-column>
+          <el-table-column label="撤回时间 / 原因" min-width="190">
+            <template #default="{ row }">
+              <span v-if="row.revokedAt" style="font-size: 12px">{{ fmtTime(row.revokedAt) }}<br />{{ row.revokeReason }}</span>
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="detail.notices.length === 0" description="暂无关联公告" :image-size="60" />
       </template>
     </el-dialog>
 
@@ -416,7 +445,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../api'
 import { useAuthStore } from '../store/auth'
-import { EVENT_STATUS, COMPLAINT_STATUS } from '../utils/dict'
+import { EVENT_STATUS, COMPLAINT_STATUS, NOTICE_TYPE } from '../utils/dict'
 import { fmtTime } from '../utils/format'
 
 const PLAN_STATUS = {

@@ -331,6 +331,20 @@ public class DataSeeder implements CommandLineRunner {
         planV1.setStatus(RectificationPlanVersion.VersionStatus.SUBMITTED);
         versionRepo.save(planV1);
 
+        // DT-3-2 停梯公告（关联整改单 #plan，复检通过前持续有效；通过时由系统统一撤回）
+        BuildingNotice stopNotice = new BuildingNotice();
+        stopNotice.setBuilding(b3);
+        stopNotice.setEventId(ev32b.getId());
+        stopNotice.setRectificationPlanId(plan.getId());
+        stopNotice.setType(BuildingNotice.NoticeType.STOP_NOTICE);
+        stopNotice.setTitle("3 栋 DT-3-2 电梯停梯整改公告");
+        stopNotice.setContent("因 DT-3-2 电梯最近 7 天内发生 2 起困人故障（故障代码：E57-门锁回路故障），物业已要求维保单位（"
+                + c2.getName() + "）提交整改方案。复检通过前电梯保持停用，请业主使用 DT-3-1 电梯或步行梯；"
+                + "高龄及行动不便业主可联系楼栋管家登记临时帮扶。 整改要求：" + plan.getRequestNote());
+        stopNotice.setPublisherName(duty2.getRealName());
+        stopNotice.setPublishedAt(plan.getRequestedAt());
+        noticeRepo.save(stopNotice);
+
         // ---------- 停梯期间老人帮扶登记 ----------
         assistance(b3, e32, "张桂英", "3 栋 1502", "13611110001", "每周二、五上午去医院透析，需协助上下楼", "物业客服小李", "13500000101", true);
         assistance(b3, e32, "王德发", "3 栋 0901", "13611110002", "每日买菜需协助搬运上楼", "保安刘建国", "13500000006", true);
@@ -356,10 +370,6 @@ public class DataSeeder implements CommandLineRunner {
         }
 
         // ---------- 楼栋公告 ----------
-        notice(b3, ev4.getId(), BuildingNotice.NoticeType.STOP_NOTICE,
-                "3 栋 DT-3-2 电梯停梯检修公告",
-                "因 8 月 10 日困人事件及年检整改要求，DT-3-2 电梯即日起停梯检修，预计 3 个工作日。请业主使用 DT-3-1 电梯或步行梯，带来不便敬请谅解。",
-                duty2);
         notice(b3, ev4.getId(), BuildingNotice.NoticeType.BACKUP_LIFT,
                 "3 栋备用梯开放通知",
                 "停梯期间，3 栋 DT-3-1 电梯作为备用梯全时段开放，高峰期物业安排专人引导，请错峰出行。",

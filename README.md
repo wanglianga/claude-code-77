@@ -10,6 +10,10 @@
 
 > 修复反复故障停梯整改的触发证据与复检版本审计：整改申请只能基于同一电梯一周内达到阈值的困人事件，事务内重新核验并固化触发事件、故障代码和投诉汇总快照；复检未通过后不得覆盖原方案及失败结论，应生成可追溯的新方案版本或不可变复检记录，保留每版配件、预计到货、复检人、公告时间、提交/复检人员与结论。当前有效版本未通过时电梯和停梯公告持续有效，只有最新版本复检通过才允许恢复运行并发布复检公告。验收：0/1起事件的电梯申请返回4xx且方案、停梯状态、公告不变；同一电梯首版失败后修订并通过，历史失败版本及其字段可查，运行状态和恢复公告只在最新版通过后变更。
 
+## 原始需求（本轮任务：复检通过后的居民通知状态冲突修复）
+
+> 修复停梯整改复检通过后的居民通知状态冲突。同一电梯的整改方案最新版复检通过并恢复运行后，系统当前仍将此前“复检通过前保持停用”的停梯公告保留为有效，同时又发布恢复运行通知，居民会收到相反的出行指引。停梯公告、恢复公告、电梯运行状态和整改版本必须围绕同一整改单联动：首版或修订版未通过时原停梯公告持续有效且不得出现恢复通知；只有最新版通过时，才在同一处置中结束或撤回关联停梯公告并发布唯一有效的恢复公告，历史公告仍可审计；历史版本重复复检或旧版本通过均不得改写当前公告。验收：首版失败、第二版通过后，公告时间线保留失败与停梯依据，但居民端仅显示一条有效的恢复运行指引；重复提交复检或对旧版本操作被拒绝，电梯状态、公告数量和通知内容不变。
+
 ## 技术栈
 
 | 层 | 技术 |
@@ -106,6 +110,35 @@ curl -s "$B/elevators/3" -H "$AUTH" | grep -o '"status":"RUNNING"'            # 
 curl -s "$B/rectification-plans/2" -H "$AUTH"    # versions[0] 为 RECHECK_FAILED 且配件/结论完整；recheckRecords 两条
 ```
 
+### 公告联动验收流（对应「居民通知状态冲突」验收标准）
+
+```bash
+# 业主（居民端）token
+OTOKEN=$(curl -s -X POST "$B/auth/login" -H "$CT" -d '{"username":"owner01","password":"123456"}' | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+OAUTH="Authorization: Bearer ${OTOKEN}"
+
+# ⑥ 首版失败、第二版通过后：公告时间线保留停梯依据（已撤回），居民端仅一条有效恢复指引
+curl -s "$B/rectification-plans/2" -H "$AUTH" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+for n in d['notices']: print(n['type'], n['status'], n['title'], '| 撤回:', n.get('revokeReason'))"
+#   → STOP_NOTICE REVOKED（停梯公告，撤回原因=第 2 版复检通过）+ RECHECK PUBLISHED（恢复公告）
+curl -s "$B/notices?buildingId=2" -H "$OAUTH"    # 居民端（业主）只见 PUBLISHED
+#   → 仅一条 DT-2-1 相关有效指引：RECHECK 恢复运行公告（停梯公告已撤回不可见）
+
+# ⑦ 重复复检 / 旧版本操作被拒绝，电梯状态、公告数量和通知内容不变
+curl -s "$B/notices" -H "$AUTH" | python3 -c "import json,sys; print('公告总数:', len(json.load(sys.stdin)))"
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$B/rectification-versions/3/recheck" -H "$MAUTH" -H "$CT" \
+  -d '{"pass":false,"result":"试图重复复检"}'                                   # → 400（已闭环）
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$B/rectification-versions/2/recheck" -H "$MAUTH" -H "$CT" \
+  -d '{"pass":true,"result":"试图操作旧版本"}'                                  # → 400（非最新版本）
+curl -s "$B/elevators/3" -H "$AUTH" | grep -o '"status":"RUNNING"'            # 状态不变
+curl -s "$B/notices" -H "$AUTH" | python3 -c "import json,sys; print('公告总数:', len(json.load(sys.stdin)))"  # 数量不变
+
+# ⑧ 关联整改单且未闭环的停梯公告禁止手动撤回（DT-3-2 仍整改中）
+curl -s "$B/rectification-plans/1" -H "$AUTH" | python3 -c "import json,sys; print([n['id'] for n in json.load(sys.stdin)['notices'] if n['status']=='PUBLISHED'])"
+curl -s -o /dev/null -w '%{http_code}\n' -X PUT "$B/notices/<停梯公告id>/revoke" -H "$AUTH"   # → 400
+```
+
 > 注：上例中整改申请 id 为 `2`（种子数据 DT-3-2 的申请为 `1`）、版本 id 依次为 `2`、`3`；若数据库非全新，请先用 `GET /api/rectification-plans` 查实际 id。
 
 ## 测试账号（逐角色）
@@ -160,7 +193,9 @@ curl -s "$B/rectification-plans/2" -H "$AUTH"    # versions[0] 为 RECHECK_FAILE
 - **整改申请（触发证据门禁）**：申请只能基于同一电梯一周内达到阈值（默认 7 天 / 2 起，`RECTIFICATION_TRIGGER_WINDOW_DAYS` / `RECTIFICATION_TRIGGER_THRESHOLD` 可调）的困人事件；事务内锁定电梯行**重新核验**，不达标整体回滚返回 4xx，方案、停梯状态、公告均不变；核验通过后同事务**固化触发事件、故障代码、投诉汇总快照**（含证据窗口与当时阈值，此后不可变），电梯随即保持停用并自动发布楼栋停梯公告；
 - **方案版本流转**：维保每次提交生成**新版本行**（版本号递增，配件、预计到货、复检人、业主公告发布时间必填）；复检未通过后**不得覆盖原方案及失败结论**，只能提交可追溯的修订版本，历史失败版本及其全部字段永久可查；
 - **不可变复检记录**：每次复检登记生成一条只增不改的复检记录（是否通过、结果、复检登记人、时间），每版仅允许登记一次，且只能对**最新版本**登记；
-- **恢复运行门禁**：当前有效版本未通过时电梯与停梯公告持续有效（事件复位、电梯档案编辑等旁路也被禁止恢复运行）；**只有最新版本复检通过**才允许恢复运行并自动发布复检公告；
+- **公告围绕整改单联动**：停梯公告/恢复公告均关联整改单（`rectificationPlanId`）。首版或修订版未通过时，原停梯公告持续有效且**不会出现任何恢复通知**；只有最新版复检通过时，才在**同一事务**中撤回关联停梯公告（保留撤回时间与原因，历史公告可审计）并发布**唯一有效**的恢复公告；历史版本重复复检或旧版本操作均被拒绝，不改写当前公告。关联整改单且未闭环的停梯公告禁止手动撤回；
+- **居民端只显示有效指引**：业主（OWNER）查询公告时仅返回当前有效（PUBLISHED）公告——停梯期间看到停梯指引，复检通过后只看到恢复运行公告，不会收到相反出行指引；管理角色可查看含已撤回的全部公告用于审计；
+- **恢复运行门禁**：当前有效版本未通过时电梯与停梯公告持续有效（事件复位、电梯档案编辑等旁路也被禁止恢复运行）；**只有最新版本复检通过**才允许恢复运行；
 - **停梯时长**：电梯进入停梯状态自动计时，恢复运行清零，故障汇总中实时展示；
 - **老人帮扶**：停梯期间可登记老人上下楼需求（就医、买菜等）与临时帮扶人员，帮扶中/已办结全程可跟踪，避免整改影响日常生活。
 
@@ -241,7 +276,8 @@ curl -s "$B/rectification-plans/2" -H "$AUTH"    # versions[0] 为 RECHECK_FAILE
 | PUT | `/api/events/{id}/flags` | 异常标记更新 |
 | POST | `/api/events/{id}/followups` | 业主回访 |
 | GET/POST | `/api/elevators` 等 | 电梯/楼栋/维保单位/合同/年检/配件档案 |
-| GET/POST | `/api/complaints`、`/api/duty-schedules`、`/api/notices` | 投诉 / 值班 / 公告 |
+| GET/POST | `/api/complaints`、`/api/duty-schedules` | 投诉 / 值班 |
+| GET/POST/PUT | `/api/notices`、`/api/notices/{id}/revoke` | 公告（业主仅见有效公告；关联整改单未闭环的停梯公告禁止手动撤回） |
 | GET | `/api/elevators/repeat-faults`、`/api/elevators/{id}/fault-summary` | 反复故障预警 / 单梯故障汇总 |
 | POST | `/api/elevators/{id}/rectification-plans` | 发起停梯整改申请（事务内核验阈值+固化证据快照，不足返回 4xx） |
 | GET | `/api/rectification-plans`、`/api/rectification-plans/{id}` | 整改申请列表 / 详情（快照+全部版本+复检记录） |

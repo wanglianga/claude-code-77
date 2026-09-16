@@ -3,9 +3,18 @@
     <template #header>
       <div style="display: flex; justify-content: space-between; align-items: center">
         <span>楼栋公告（停梯 / 备用梯 / 老人协助 / 复检通知）</span>
-        <el-button type="primary" @click="openCreate">发布公告</el-button>
+        <div>
+          <el-radio-group v-if="canManage" v-model="statusFilter" size="small" style="margin-right: 12px" @change="load">
+            <el-radio-button value="">全部（含已撤回）</el-radio-button>
+            <el-radio-button value="PUBLISHED">仅有效</el-radio-button>
+          </el-radio-group>
+          <el-button v-if="canManage" type="primary" @click="openCreate">发布公告</el-button>
+        </div>
       </div>
     </template>
+
+    <el-alert v-if="!canManage" type="info" :closable="false" show-icon style="margin-bottom: 12px"
+      title="居民端仅显示当前有效的公告指引；已撤回的停梯公告不再展示，历史公告由物业存档审计" />
 
     <el-row :gutter="14">
       <el-col v-for="notice in notices" :key="notice.id" :span="8" style="margin-bottom: 14px">
@@ -13,12 +22,16 @@
           <div style="display: flex; justify-content: space-between; align-items: flex-start">
             <el-tag :type="NOTICE_TYPE[notice.type]?.type" size="small">{{ NOTICE_TYPE[notice.type]?.label }}</el-tag>
             <el-tag v-if="notice.status === 'REVOKED'" type="info" size="small">已撤回</el-tag>
+            <el-tag v-else type="success" size="small" effect="plain">有效</el-tag>
           </div>
           <div style="font-weight: 600; margin: 8px 0 4px">{{ notice.title }}</div>
           <div style="font-size: 12px; color: #5a6478; min-height: 54px; white-space: pre-wrap">{{ notice.content }}</div>
+          <div v-if="notice.status === 'REVOKED'" style="font-size: 12px; color: #a0a8b8; margin-top: 6px">
+            撤回于 {{ fmtTime(notice.revokedAt, 'MM-DD HH:mm') }}<span v-if="notice.revokeReason">：{{ notice.revokeReason }}</span>
+          </div>
           <div style="font-size: 12px; color: #8a94a8; margin-top: 8px; display: flex; justify-content: space-between; align-items: center">
             <span>{{ notice.building?.name }} ｜ {{ notice.publisherName }} ｜ {{ fmtTime(notice.publishedAt, 'MM-DD HH:mm') }}</span>
-            <el-button v-if="notice.status === 'PUBLISHED'" size="small" link type="danger" @click="revoke(notice)">撤回</el-button>
+            <el-button v-if="notice.status === 'PUBLISHED' && canManage" size="small" link type="danger" @click="revoke(notice)">撤回</el-button>
           </div>
         </el-card>
       </el-col>
@@ -54,19 +67,24 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { useAuthStore } from '../store/auth'
 import { NOTICE_TYPE } from '../utils/dict'
 import { fmtTime } from '../utils/format'
 
+const auth = useAuthStore()
 const notices = ref([])
 const buildings = ref([])
+const statusFilter = ref('')
 const createDialog = ref(false)
 const createForm = reactive({ buildingId: null, type: 'GENERAL', title: '', content: '' })
 
+const canManage = computed(() => ['ADMIN', 'DUTY', 'BUTLER'].includes(auth.user?.role))
+
 async function load() {
-  const res = await api.get('/notices')
+  const res = await api.get('/notices', { params: statusFilter.value ? { status: statusFilter.value } : {} })
   notices.value = res.data
 }
 
@@ -93,9 +111,13 @@ async function saveCreate() {
 
 async function revoke(notice) {
   await ElMessageBox.confirm(`确认撤回公告「${notice.title}」？`, '撤回公告', { type: 'warning' })
-  await api.put(`/notices/${notice.id}/revoke`)
-  ElMessage.success('已撤回')
-  load()
+  try {
+    await api.put(`/notices/${notice.id}/revoke`)
+    ElMessage.success('已撤回')
+    load()
+  } catch {
+    /* 拦截器已提示（如：关联整改单的停梯公告须复检通过后由系统统一结束） */
+  }
 }
 
 onMounted(async () => {

@@ -243,7 +243,7 @@ public class RectificationService {
         // 未复检通过前电梯保持停用
         stopElevator(elevator);
 
-        // 自动发布楼栋停梯公告
+        // 自动发布楼栋停梯公告（关联本整改单，复检通过前持续有效）
         publishNotice(elevator, BuildingNotice.NoticeType.STOP_NOTICE,
                 elevator.getBuilding().getName() + " " + elevator.getCode() + " 电梯停梯整改公告",
                 "因 " + elevator.getCode() + " 电梯最近 " + triggerWindowDays + " 天内发生 "
@@ -252,7 +252,7 @@ public class RectificationService {
                         + "）提交整改方案。复检通过前电梯保持停用，"
                         + "请业主使用其他电梯或步行梯；高龄及行动不便业主可联系楼栋管家登记临时帮扶。"
                         + (requestNote != null && !requestNote.isBlank() ? " 整改要求：" + requestNote : ""),
-                operator.getRealName(), eventId);
+                operator.getRealName(), eventId, plan.getId());
         return plan;
     }
 
@@ -362,20 +362,30 @@ public class RectificationService {
         if (pass) {
             version.setStatus(RectificationPlanVersion.VersionStatus.RECHECK_PASSED);
             plan.setStatus(RectificationPlan.PlanStatus.RECHECK_PASSED);
-            // 仅最新版本复检通过才允许恢复运行，并发布复检公告
+            // 仅最新版本复检通过才允许恢复运行
             elevator.setStatus(Elevator.ElevatorStatus.RUNNING);
             elevator.setStoppedSince(null);
             elevatorRepo.save(elevator);
+            // 同一处置中：结束本整改单关联的有效停梯公告（撤回但保留可审计），
+            // 再发布唯一有效的恢复公告，避免居民收到相反出行指引
+            for (BuildingNotice stopNotice : noticeRepo.findByRectificationPlanIdAndTypeAndStatus(
+                    plan.getId(), BuildingNotice.NoticeType.STOP_NOTICE, BuildingNotice.NoticeStatus.PUBLISHED)) {
+                stopNotice.setStatus(BuildingNotice.NoticeStatus.REVOKED);
+                stopNotice.setRevokedAt(record.getRecheckedAt());
+                stopNotice.setRevokeReason("整改方案第 " + version.getVersionNo()
+                        + " 版复检通过，电梯恢复运行，停梯公告自动结束");
+                noticeRepo.save(stopNotice);
+            }
             publishNotice(elevator, BuildingNotice.NoticeType.RECHECK,
                     elevator.getBuilding().getName() + " " + elevator.getCode() + " 电梯复检通过恢复运行公告",
                     elevator.getCode() + " 电梯整改方案第 " + version.getVersionNo()
                             + " 版已完成并经复检合格（复检人：" + version.getRecheckInspector()
                             + "），即日起恢复正常运行。感谢业主理解与配合。复检结果：" + result,
-                    operator.getRealName(), plan.getEventId());
+                    operator.getRealName(), plan.getEventId(), plan.getId());
         } else {
             version.setStatus(RectificationPlanVersion.VersionStatus.RECHECK_FAILED);
             plan.setStatus(RectificationPlan.PlanStatus.RECHECK_FAILED);
-            // 保持停梯（停梯起始时间不变），停梯公告持续有效，等待提交修订版本
+            // 保持停梯（停梯起始时间不变），关联停梯公告持续有效，不发布任何恢复通知
             stopElevator(elevator);
         }
         versionRepo.save(version);
@@ -400,7 +410,7 @@ public class RectificationService {
         return planViews(planRepo.findByElevatorIdOrderByRequestedAtDesc(elevatorId));
     }
 
-    /** 申请详情：快照 + 全部版本（含历史失败版本）+ 不可变复检记录 */
+    /** 申请详情：快照 + 全部版本（含历史失败版本）+ 不可变复检记录 + 公告时间线 */
     public PlanDetail planDetail(Long planId, User user) {
         RectificationPlan plan = getPlan(planId);
         if (!inReadScope(user, plan.getElevator())) {
@@ -408,7 +418,8 @@ public class RectificationService {
         }
         return new PlanDetail(plan,
                 versionRepo.findByPlanIdOrderByVersionNoAsc(planId),
-                recheckRecordRepo.findByPlanIdOrderByRecheckedAtAsc(planId));
+                recheckRecordRepo.findByPlanIdOrderByRecheckedAtAsc(planId),
+                noticeRepo.findByRectificationPlanIdOrderByPublishedAtAsc(planId));
     }
 
     public List<RecheckRecord> recheckRecords(Long planId, User user) {
@@ -450,10 +461,11 @@ public class RectificationService {
     }
 
     private void publishNotice(Elevator elevator, BuildingNotice.NoticeType type,
-                               String title, String content, String publisher, Long eventId) {
+                               String title, String content, String publisher, Long eventId, Long rectificationPlanId) {
         BuildingNotice notice = new BuildingNotice();
         notice.setBuilding(elevator.getBuilding());
         notice.setEventId(eventId);
+        notice.setRectificationPlanId(rectificationPlanId);
         notice.setType(type);
         notice.setTitle(title);
         notice.setContent(content);
