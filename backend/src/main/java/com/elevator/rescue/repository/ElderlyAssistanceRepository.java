@@ -9,4 +9,14 @@ public interface ElderlyAssistanceRepository extends JpaRepository<ElderlyAssist
     List<ElderlyAssistance> findByBuildingIdOrderByCreatedAtDesc(Long buildingId);
 
     List<ElderlyAssistance> findAllByOrderByCreatedAtDesc();
+
+    List<ElderlyAssistance> findByStatusOrderByCreatedAtDesc(ElderlyAssistance.AssistanceStatus status);
+
+    List<ElderlyAssistance> findByRectificationPlanIdOrderByCreatedAtDesc(Long rectificationPlanId);
+
+    List<ElderlyAssistance> findByRectificationPlanIdAndStatus(Long rectificationPlanId,
+                                                               ElderlyAssistance.AssistanceStatus status);
+
+    List<ElderlyAssistance> findByElevatorIdAndStatus(Long elevatorId,
+                                                      ElderlyAssistance.AssistanceStatus status);
 }

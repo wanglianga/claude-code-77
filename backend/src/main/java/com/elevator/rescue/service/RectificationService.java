@@ -1,5 +1,7 @@
 package com.elevator.rescue.service;
 
+import com.elevator.rescue.dto.AssistanceDetail;
+import com.elevator.rescue.dto.CurrentBatchView;
 import com.elevator.rescue.dto.PlanDetail;
 import com.elevator.rescue.dto.PlanView;
 import com.elevator.rescue.entity.*;
@@ -35,6 +37,8 @@ public class RectificationService {
     private final RectificationPlanVersionRepository versionRepo;
     private final RecheckRecordRepository recheckRecordRepo;
     private final ElderlyAssistanceRepository assistanceRepo;
+    private final AssistanceEventRepository assistanceEventRepo;
+    private final AssistancePlanLinkRepository assistanceLinkRepo;
     private final BuildingNoticeRepository noticeRepo;
     private final BuildingRepository buildingRepo;
     private final ObjectMapper objectMapper;
@@ -253,6 +257,19 @@ public class RectificationService {
                         + "请业主使用其他电梯或步行梯；高龄及行动不便业主可联系楼栋管家登记临时帮扶。"
                         + (requestNote != null && !requestNote.isBlank() ? " 整改要求：" + requestNote : ""),
                 operator.getRealName(), eventId, plan.getId());
+
+        // 续办关怀自动纳入新批次：上一次停梯恢复后管家确认「继续关怀」的记录，
+        // 关联进本整改单，使本次停梯只汇总「新批次需求 + 明确续办的需求」
+        for (ElderlyAssistance continued : assistanceRepo.findByElevatorIdAndStatus(
+                elevatorId, ElderlyAssistance.AssistanceStatus.CONTINUED)) {
+            AssistancePlanLink link = new AssistancePlanLink();
+            link.setAssistance(continued);
+            link.setRectificationPlanId(plan.getId());
+            assistanceLinkRepo.save(link);
+            logAssistance(continued, operator.getRealName(), AssistanceEvent.Action.CARRY_IN,
+                    continued.getStatus(), continued.getStatus(),
+                    "续办关怀纳入新停梯批次（整改单 #" + plan.getId() + "）");
+        }
         return plan;
     }
 
@@ -382,6 +399,19 @@ public class RectificationService {
                             + " 版已完成并经复检合格（复检人：" + version.getRecheckInspector()
                             + "），即日起恢复正常运行。感谢业主理解与配合。复检结果：" + result,
                     operator.getRealName(), plan.getEventId(), plan.getId());
+
+            // 同一处置中：本批次停梯期间登记且未办结的帮扶统一转入「待复核」，
+            // 不再计入「停梯期间帮扶中」，等待管家逐条确认结案 / 续办 / 改约
+            for (ElderlyAssistance a : assistanceRepo.findByRectificationPlanIdAndStatus(
+                    plan.getId(), ElderlyAssistance.AssistanceStatus.ACTIVE)) {
+                a.setStatus(ElderlyAssistance.AssistanceStatus.PENDING_REVIEW);
+                assistanceRepo.save(a);
+                logAssistance(a, null, AssistanceEvent.Action.AUTO_PENDING_REVIEW,
+                        ElderlyAssistance.AssistanceStatus.ACTIVE,
+                        ElderlyAssistance.AssistanceStatus.PENDING_REVIEW,
+                        "整改单 #" + plan.getId() + " 第 " + version.getVersionNo()
+                                + " 版复检通过，电梯恢复运行，帮扶需求待管家复核");
+            }
         } else {
             version.setStatus(RectificationPlanVersion.VersionStatus.RECHECK_FAILED);
             plan.setStatus(RectificationPlan.PlanStatus.RECHECK_FAILED);
@@ -410,16 +440,22 @@ public class RectificationService {
         return planViews(planRepo.findByElevatorIdOrderByRequestedAtDesc(elevatorId));
     }
 
-    /** 申请详情：快照 + 全部版本（含历史失败版本）+ 不可变复检记录 + 公告时间线 */
+    /** 申请详情：快照 + 全部版本（含历史失败版本）+ 不可变复检记录 + 公告时间线 + 本批次帮扶记录 */
     public PlanDetail planDetail(Long planId, User user) {
         RectificationPlan plan = getPlan(planId);
         if (!inReadScope(user, plan.getElevator())) {
             throw new AccessDeniedException("无权查看该整改申请");
         }
+        List<ElderlyAssistance> carried = assistanceLinkRepo.findByRectificationPlanId(planId).stream()
+                .map(AssistancePlanLink::getAssistance)
+                .filter(a -> a.getRectificationPlan() == null || !a.getRectificationPlan().getId().equals(planId))
+                .toList();
         return new PlanDetail(plan,
                 versionRepo.findByPlanIdOrderByVersionNoAsc(planId),
                 recheckRecordRepo.findByPlanIdOrderByRecheckedAtAsc(planId),
-                noticeRepo.findByRectificationPlanIdOrderByPublishedAtAsc(planId));
+                noticeRepo.findByRectificationPlanIdOrderByPublishedAtAsc(planId),
+                assistanceRepo.findByRectificationPlanIdOrderByCreatedAtDesc(planId),
+                carried);
     }
 
     public List<RecheckRecord> recheckRecords(Long planId, User user) {
@@ -474,8 +510,12 @@ public class RectificationService {
         noticeRepo.save(notice);
     }
 
-    // ==================== 老人上下楼帮扶 ====================
+    // ==================== 老人上下楼帮扶（按整改单批次交接） ====================
 
+    /**
+     * 登记停梯期间老人帮扶：必须关联本电梯当前进行中的整改单（停梯批次），
+     * 使帮扶与当次停梯公告、人力安排、复检记录同属一个批次，可互相追溯。
+     */
     @Transactional
     public ElderlyAssistance createAssistance(Long buildingId, Long elevatorId, String residentName,
                                               String roomNo, String phone, String needDescription,
@@ -496,14 +536,25 @@ public class RectificationService {
         if (helperName == null || helperName.isBlank()) {
             throw new IllegalArgumentException("请填写临时帮扶人员");
         }
+        if (elevatorId == null) {
+            throw new IllegalArgumentException("请选择关联的停梯电梯");
+        }
+        Elevator elevator = elevatorRepo.findById(elevatorId)
+                .orElseThrow(() -> new IllegalArgumentException("电梯不存在"));
+        if (!elevator.getBuilding().getId().equals(buildingId)) {
+            throw new IllegalArgumentException("所选电梯不属于该楼栋");
+        }
+        // 帮扶必须挂在发起它的停梯批次上：电梯须处于停梯整改中
+        RectificationPlan batch = activePlan(elevatorId);
+        if (batch == null) {
+            throw new IllegalStateException("电梯 " + elevator.getCode()
+                    + " 当前无进行中的停梯整改单，不能登记停梯帮扶；请先发起停梯整改申请");
+        }
 
         ElderlyAssistance a = new ElderlyAssistance();
         a.setBuilding(building);
-        if (elevatorId != null) {
-            Elevator elevator = elevatorRepo.findById(elevatorId)
-                    .orElseThrow(() -> new IllegalArgumentException("电梯不存在"));
-            a.setElevator(elevator);
-        }
+        a.setElevator(elevator);
+        a.setRectificationPlan(batch);
         a.setResidentName(residentName);
         a.setRoomNo(roomNo);
         a.setPhone(phone);
@@ -511,25 +562,125 @@ public class RectificationService {
         a.setHelperName(helperName);
         a.setHelperPhone(helperPhone);
         a.setStatus(ElderlyAssistance.AssistanceStatus.ACTIVE);
-        return assistanceRepo.save(a);
+        a.setCreatedByName(operator.getRealName());
+        assistanceRepo.save(a);
+        logAssistance(a, operator.getRealName(), AssistanceEvent.Action.CREATE, null,
+                ElderlyAssistance.AssistanceStatus.ACTIVE,
+                "停梯期间登记帮扶，归入整改单 #" + batch.getId() + "（" + elevator.getCode() + " 本批次）");
+        return a;
     }
 
+    /**
+     * 管家复核帮扶记录：确认完成 / 继续关怀 / 改约，保留处理人与时间。
+     *
+     * <ul>
+     *   <li>完成：帮扶中 / 待复核 / 续办中 → 已完成（办结）</li>
+     *   <li>继续关怀：待复核 → 续办关怀（下次停梯自动纳入新批次汇总）</li>
+     *   <li>改约：待复核 / 续办中 → 已改约（约定下次服务时间，本批次结案）</li>
+     * </ul>
+     */
     @Transactional
-    public ElderlyAssistance resolveAssistance(Long id, User operator) {
-        requireRole(operator, "办结帮扶登记", Role.ADMIN, Role.DUTY, Role.BUTLER);
+    public ElderlyAssistance reviewAssistance(Long id, ElderlyAssistance.ReviewAction action,
+                                              String note, LocalDateTime nextAppointmentAt, User operator) {
+        requireRole(operator, "复核帮扶记录", Role.ADMIN, Role.DUTY, Role.BUTLER);
+        if (action == null) {
+            throw new IllegalArgumentException("请选择复核处理方式");
+        }
         ElderlyAssistance a = assistanceRepo.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("帮扶登记不存在"));
-        if (operator.getRole() == Role.BUTLER
-                && (operator.getBuildingId() == null || !operator.getBuildingId().equals(a.getBuilding().getId()))) {
-            throw new AccessDeniedException("楼栋管家只能办结本楼栋的帮扶需求");
+        requireAssistanceScope(operator, a);
+
+        ElderlyAssistance.AssistanceStatus from = a.getStatus();
+        ElderlyAssistance.AssistanceStatus to = switch (action) {
+            case COMPLETE -> {
+                requireStatus(a, "确认完成", ElderlyAssistance.AssistanceStatus.ACTIVE,
+                        ElderlyAssistance.AssistanceStatus.PENDING_REVIEW,
+                        ElderlyAssistance.AssistanceStatus.CONTINUED);
+                yield ElderlyAssistance.AssistanceStatus.RESOLVED;
+            }
+            case CONTINUE -> {
+                requireStatus(a, "确认继续关怀", ElderlyAssistance.AssistanceStatus.PENDING_REVIEW);
+                yield ElderlyAssistance.AssistanceStatus.CONTINUED;
+            }
+            case RESCHEDULE -> {
+                requireStatus(a, "确认改约", ElderlyAssistance.AssistanceStatus.PENDING_REVIEW,
+                        ElderlyAssistance.AssistanceStatus.CONTINUED);
+                if (nextAppointmentAt == null) {
+                    throw new IllegalArgumentException("改约必须填写下次服务时间");
+                }
+                yield ElderlyAssistance.AssistanceStatus.RESCHEDULED;
+            }
+        };
+
+        a.setStatus(to);
+        a.setReviewedBy(operator.getRealName());
+        a.setReviewedAt(LocalDateTime.now());
+        a.setReviewAction(action);
+        a.setReviewNote(note);
+        if (action == ElderlyAssistance.ReviewAction.RESCHEDULE) {
+            a.setNextAppointmentAt(nextAppointmentAt);
         }
-        a.setStatus(ElderlyAssistance.AssistanceStatus.RESOLVED);
-        a.setResolvedAt(LocalDateTime.now());
-        return assistanceRepo.save(a);
+        if (to == ElderlyAssistance.AssistanceStatus.RESOLVED) {
+            a.setResolvedAt(a.getReviewedAt());
+        }
+        assistanceRepo.save(a);
+        logAssistance(a, operator.getRealName(), toEventAction(action), from, to, note);
+        return a;
     }
 
-    public List<ElderlyAssistance> listAssistances(Long buildingId, Boolean activeOnly, User user) {
-        List<ElderlyAssistance> list = buildingId != null
+    /** 旧接口兼容：办结 = 复核「确认完成」 */
+    @Transactional
+    public ElderlyAssistance resolveAssistance(Long id, User operator) {
+        return reviewAssistance(id, ElderlyAssistance.ReviewAction.COMPLETE, null, null, operator);
+    }
+
+    /**
+     * 当前停梯批次帮扶汇总：每个进行中的整改单 = 本批次新登记需求（帮扶中）
+     * + 历史批次明确续办转入的关怀。已恢复电梯的旧批次记录不计入人力需求。
+     */
+    public List<CurrentBatchView> currentBatches(User user) {
+        if (user.getRole() == Role.MAINTENANCE) {
+            return List.of(); // 维保人员不查看业主帮扶信息
+        }
+        List<CurrentBatchView> result = new ArrayList<>();
+        for (RectificationPlan plan : planRepo.findAllByOrderByRequestedAtDesc()) {
+            if (plan.getStatus() == RectificationPlan.PlanStatus.RECHECK_PASSED
+                    || !inReadScope(user, plan.getElevator())) {
+                continue;
+            }
+            List<ElderlyAssistance> newBatch = assistanceRepo.findByRectificationPlanIdAndStatus(
+                    plan.getId(), ElderlyAssistance.AssistanceStatus.ACTIVE);
+            List<ElderlyAssistance> carried = assistanceLinkRepo.findByRectificationPlanId(plan.getId()).stream()
+                    .map(AssistancePlanLink::getAssistance)
+                    .filter(a -> a.getStatus() == ElderlyAssistance.AssistanceStatus.CONTINUED)
+                    .toList();
+            result.add(new CurrentBatchView(plan, newBatch, carried));
+        }
+        return result;
+    }
+
+    /** 帮扶详情：记录 + 处理留痕时间线 + 历次纳入的停梯批次（与整改单、公告、复检互相追溯） */
+    public AssistanceDetail assistanceDetail(Long id, User user) {
+        ElderlyAssistance a = assistanceRepo.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("帮扶登记不存在"));
+        if (user.getRole() == Role.MAINTENANCE) {
+            throw new AccessDeniedException("维保人员不查看业主帮扶信息");
+        }
+        if ((user.getRole() == Role.BUTLER || user.getRole() == Role.OWNER)
+                && (user.getBuildingId() == null || !user.getBuildingId().equals(a.getBuilding().getId()))) {
+            throw new AccessDeniedException("只能查看本楼栋的帮扶记录");
+        }
+        return new AssistanceDetail(a,
+                assistanceEventRepo.findByAssistanceIdOrderByCreatedAtAsc(id),
+                assistanceLinkRepo.findByAssistanceIdOrderByLinkedAtAsc(id));
+    }
+
+    public List<ElderlyAssistance> listAssistances(Long buildingId, Boolean activeOnly,
+                                                   ElderlyAssistance.AssistanceStatus status,
+                                                   Long planId, User user) {
+        List<ElderlyAssistance> list = planId != null
+                ? assistanceRepo.findByRectificationPlanIdOrderByCreatedAtDesc(planId)
+                : buildingId != null
                 ? assistanceRepo.findByBuildingIdOrderByCreatedAtDesc(buildingId)
                 : assistanceRepo.findAllByOrderByCreatedAtDesc();
         return list.stream()
@@ -543,7 +694,49 @@ public class RectificationService {
                     }
                     return true;
                 })
+                .filter(a -> status == null || a.getStatus() == status)
                 .filter(a -> !Boolean.TRUE.equals(activeOnly) || a.getStatus() == ElderlyAssistance.AssistanceStatus.ACTIVE)
                 .toList();
+    }
+
+    private void requireAssistanceScope(User operator, ElderlyAssistance a) {
+        if (operator.getRole() == Role.BUTLER
+                && (operator.getBuildingId() == null || !operator.getBuildingId().equals(a.getBuilding().getId()))) {
+            throw new AccessDeniedException("楼栋管家只能处理本楼栋的帮扶需求");
+        }
+        if (operator.getRole() == Role.MAINTENANCE || operator.getRole() == Role.OWNER) {
+            throw new AccessDeniedException("当前角色无权处理帮扶记录");
+        }
+    }
+
+    private void requireStatus(ElderlyAssistance a, String action,
+                               ElderlyAssistance.AssistanceStatus... allowed) {
+        for (ElderlyAssistance.AssistanceStatus s : allowed) {
+            if (a.getStatus() == s) {
+                return;
+            }
+        }
+        throw new IllegalStateException("当前状态（" + a.getStatus() + "）不允许" + action);
+    }
+
+    private AssistanceEvent.Action toEventAction(ElderlyAssistance.ReviewAction action) {
+        return switch (action) {
+            case COMPLETE -> AssistanceEvent.Action.COMPLETE;
+            case CONTINUE -> AssistanceEvent.Action.CONTINUE;
+            case RESCHEDULE -> AssistanceEvent.Action.RESCHEDULE;
+        };
+    }
+
+    private void logAssistance(ElderlyAssistance a, String actorName, AssistanceEvent.Action action,
+                               ElderlyAssistance.AssistanceStatus from,
+                               ElderlyAssistance.AssistanceStatus to, String note) {
+        AssistanceEvent event = new AssistanceEvent();
+        event.setAssistance(a);
+        event.setActorName(actorName);
+        event.setAction(action);
+        event.setFromStatus(from);
+        event.setToStatus(to);
+        event.setNote(note);
+        assistanceEventRepo.save(event);
     }
 }

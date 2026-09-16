@@ -1,5 +1,7 @@
 package com.elevator.rescue.controller;
 
+import com.elevator.rescue.dto.AssistanceDetail;
+import com.elevator.rescue.dto.CurrentBatchView;
 import com.elevator.rescue.dto.PlanDetail;
 import com.elevator.rescue.dto.PlanView;
 import com.elevator.rescue.entity.ElderlyAssistance;
@@ -46,13 +48,19 @@ public class RectificationController {
 
     public record AssistanceDto(
             @NotNull(message = "请选择楼栋") Long buildingId,
-            Long elevatorId,
+            @NotNull(message = "请选择关联的停梯电梯") Long elevatorId,
             @NotBlank(message = "请填写老人/住户姓名") String residentName,
             String roomNo,
             String phone,
             @NotBlank(message = "请填写上下楼需求") String needDescription,
             @NotBlank(message = "请填写临时帮扶人员") String helperName,
             String helperPhone) {
+    }
+
+    public record AssistanceReviewDto(
+            @NotNull(message = "请选择复核处理方式") ElderlyAssistance.ReviewAction action,
+            String note,
+            LocalDateTime nextAppointmentAt) {
     }
 
     // ---------- 故障汇总 ----------
@@ -111,19 +119,43 @@ public class RectificationController {
                 authHelper.requireUser(auth));
     }
 
-    // ---------- 老人帮扶 ----------
+    // ---------- 老人帮扶（按整改单批次交接） ----------
 
     @GetMapping("/assistances")
     public List<ElderlyAssistance> listAssistances(@RequestParam(required = false) Long buildingId,
                                                    @RequestParam(required = false) Boolean activeOnly,
+                                                   @RequestParam(required = false) ElderlyAssistance.AssistanceStatus status,
+                                                   @RequestParam(required = false) Long planId,
                                                    Authentication auth) {
-        return rectificationService.listAssistances(buildingId, activeOnly, authHelper.requireUser(auth));
+        return rectificationService.listAssistances(buildingId, activeOnly, status, planId,
+                authHelper.requireUser(auth));
+    }
+
+    /** 当前停梯批次帮扶汇总：每个进行中整改单 = 本批次新需求 + 历史批次续办转入 */
+    @GetMapping("/assistances/current-batches")
+    public List<CurrentBatchView> currentBatches(Authentication auth) {
+        return rectificationService.currentBatches(authHelper.requireUser(auth));
+    }
+
+    /** 帮扶详情：处理留痕时间线 + 历次纳入批次，与整改单/公告/复检互相追溯 */
+    @GetMapping("/assistances/{id}")
+    public AssistanceDetail assistanceDetail(@PathVariable Long id, Authentication auth) {
+        return rectificationService.assistanceDetail(id, authHelper.requireUser(auth));
     }
 
     @PostMapping("/assistances")
     public ElderlyAssistance createAssistance(@Valid @RequestBody AssistanceDto req, Authentication auth) {
         return rectificationService.createAssistance(req.buildingId(), req.elevatorId(), req.residentName(),
                 req.roomNo(), req.phone(), req.needDescription(), req.helperName(), req.helperPhone(),
+                authHelper.requireUser(auth));
+    }
+
+    /** 管家复核：确认完成 / 继续关怀 / 改约，保留处理人与时间 */
+    @PostMapping("/assistances/{id}/review")
+    public ElderlyAssistance reviewAssistance(@PathVariable Long id,
+                                              @Valid @RequestBody AssistanceReviewDto req,
+                                              Authentication auth) {
+        return rectificationService.reviewAssistance(id, req.action(), req.note(), req.nextAppointmentAt(),
                 authHelper.requireUser(auth));
     }
 

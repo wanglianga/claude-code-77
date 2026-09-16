@@ -65,6 +65,32 @@ export const COMPLAINT_STATUS = {
   RESOLVED: { label: '已办结', type: 'success' }
 }
 
+// 老人帮扶状态（按整改单批次交接）
+export const ASSISTANCE_STATUS = {
+  ACTIVE: { label: '帮扶中', type: 'warning' },
+  PENDING_REVIEW: { label: '待复核', type: 'danger' },
+  CONTINUED: { label: '续办关怀', type: 'primary' },
+  RESCHEDULED: { label: '已改约', type: 'info' },
+  RESOLVED: { label: '已完成', type: 'success' }
+}
+
+// 帮扶复核动作
+export const REVIEW_ACTION = {
+  COMPLETE: { label: '确认完成', type: 'success' },
+  CONTINUE: { label: '继续关怀', type: 'primary' },
+  RESCHEDULE: { label: '改约', type: 'warning' }
+}
+
+// 帮扶留痕动作
+export const ASSISTANCE_EVENT_ACTION = {
+  CREATE: '登记',
+  AUTO_PENDING_REVIEW: '电梯恢复，转待复核',
+  COMPLETE: '确认完成',
+  CONTINUE: '继续关怀',
+  RESCHEDULE: '改约',
+  CARRY_IN: '续办纳入新批次'
+}
+
 export const NOTICE_TYPE = {
   STOP_NOTICE: { label: '停梯公告', type: 'danger' },
   BACKUP_LIFT: { label: '备用梯开放', type: 'warning' },

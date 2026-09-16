@@ -14,6 +14,10 @@
 
 > 修复停梯整改复检通过后的居民通知状态冲突。同一电梯的整改方案最新版复检通过并恢复运行后，系统当前仍将此前“复检通过前保持停用”的停梯公告保留为有效，同时又发布恢复运行通知，居民会收到相反的出行指引。停梯公告、恢复公告、电梯运行状态和整改版本必须围绕同一整改单联动：首版或修订版未通过时原停梯公告持续有效且不得出现恢复通知；只有最新版通过时，才在同一处置中结束或撤回关联停梯公告并发布唯一有效的恢复公告，历史公告仍可审计；历史版本重复复检或旧版本通过均不得改写当前公告。验收：首版失败、第二版通过后，公告时间线保留失败与停梯依据，但居民端仅显示一条有效的恢复运行指引；重复提交复检或对旧版本操作被拒绝，电梯状态、公告数量和通知内容不变。
 
+## 原始需求（本轮任务：老人帮扶按整改单批次交接修复）
+
+> 修复反复停梯整改完成后老人帮扶无法按整改单交接的问题。DT-3-2 等电梯复检通过并恢复运行时，停梯公告会正确撤回并发布恢复通知，但停梯期间登记的老人上下楼帮扶继续以“帮扶中”留在列表；电梯再次故障后，管家看到的是混在一起的旧帮扶和新需求，既无法确认上一次停梯中透析、买菜等临时安排是否已结束，也会把已恢复电梯的人力需求持续计入新的整改期间。帮扶记录应关联发起它的整改单或停梯批次：恢复运行后，未办结服务进入待复核而非继续作为本轮停梯帮扶；管家确认继续关怀、已完成或改约时保留处理人和时间；下一次停梯只汇总新批次及明确续办的需求，历史帮扶和当次电梯、公告、复检记录可互相追溯。验收：DT-3-2 停梯时登记王德发买菜和张桂英透析帮扶，首版失败、修订版通过后，电梯恢复运行且两条记录不再计入“停梯期间帮扶中”，而是等待管家逐条确认结案或续办；该电梯再次停梯时新增就医帮扶只归入新的整改单，列表可区分旧批次已结案、续办关怀和新停梯需求；未恢复运行时，原批次帮扶、停梯公告和人力安排保持一致。
+
 ## 技术栈
 
 | 层 | 技术 |
@@ -141,6 +145,101 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PUT "$B/notices/<停梯公告id>/rev
 
 > 注：上例中整改申请 id 为 `2`（种子数据 DT-3-2 的申请为 `1`）、版本 id 依次为 `2`、`3`；若数据库非全新，请先用 `GET /api/rectification-plans` 查实际 id。
 
+### 帮扶批次交接验收流（对应「老人帮扶按整改单批次交接」验收标准）
+
+种子数据已内置：DT-3-2（电梯 id=6）停梯整改单 `#1`（第 1 版待复检），停梯公告有效；帮扶记录 `#1 张桂英-透析`、`#2 王德发-买菜`（均帮扶中，关联整改单 #1）、`#3 刘淑芬-取药`（本批次已办结）。需 `duty01` 的 `TOKEN`、维保 `maint02` 的 `MTOKEN`、3 栋管家 `butler03/123456` 的 `BTOKEN`（获取方式同前，`B="http://host.docker.internal:${PORT}/api"`）。
+
+```bash
+AUTH="Authorization: Bearer ${TOKEN}"
+MAUTH="Authorization: Bearer ${MTOKEN}"
+BAUTH="Authorization: Bearer ${BTOKEN}"
+CT="Content-Type: application/json"
+
+# ① 停梯期间：当前批次汇总 = 整改单 #1 的 2 条新需求（透析/买菜），人力安排计入本批次
+curl -s "$B/assistances/current-batches" -H "$AUTH" | python3 -c "
+import json,sys
+for b in json.load(sys.stdin):
+    print('整改单#', b['plan']['id'], b['plan']['elevator']['code'],
+          '新需求:', [r['residentName'] for r in b['newBatch']], '续办转入:', [r['residentName'] for r in b['carried']])"
+#   → 整改单# 1 DT-3-2 新需求: ['张桂英', '王德发'] 续办转入: []
+
+# ② 首版复检未通过：电梯仍停梯、两条帮扶仍帮扶中、停梯公告仍有效（未恢复运行时三者保持一致）
+curl -s -X POST "$B/rectification-versions/1/recheck" -H "$MAUTH" -H "$CT" \
+  -d '{"pass":false,"result":"门锁回路更换后仍偶发断开，首版未通过"}'
+curl -s "$B/elevators/6" -H "$AUTH" | grep -o '"status":"STOPPED"'
+curl -s "$B/assistances/current-batches" -H "$AUTH" | grep -o '张桂英\|王德发'   # 仍在本批次帮扶中
+curl -s "$B/rectification-plans/1" -H "$AUTH" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('公告:', [(n['type'], n['status']) for n in d['notices']])"
+#   → 公告: [('STOP_NOTICE', 'PUBLISHED')]（无恢复公告）
+
+# ③ 提交修订版（第 2 版）→ 复检通过：电梯恢复、停梯公告撤回、恢复公告发布；
+#    两条帮扶自动转「待复核」，不再计入「停梯期间帮扶中」
+curl -s -X POST "$B/rectification-plans/1/versions" -H "$MAUTH" -H "$CT" \
+  -d '{"parts":"门锁触点组件 ×2、门机控制板 ×1、门锁回路整套线束 ×1","expectedArrival":"2026-09-20","recheckInspector":"市特检院 李工","noticePublishTime":"2026-09-21T09:00:00","planDetail":"整套更换门锁回路并全检门系统"}'
+curl -s -X POST "$B/rectification-versions/2/recheck" -H "$MAUTH" -H "$CT" \
+  -d '{"pass":true,"result":"全检合格，同意恢复运行"}'
+curl -s "$B/elevators/6" -H "$AUTH" | grep -o '"status":"RUNNING"'
+curl -s "$B/assistances/current-batches" -H "$AUTH"   # → []（无进行中批次，旧记录不再计入帮扶中）
+curl -s "$B/assistances?status=PENDING_REVIEW" -H "$BAUTH" | python3 -c "
+import json,sys; print([(a['id'], a['residentName'], a['status']) for a in json.load(sys.stdin)])"
+#   → [(1, '张桂英', 'PENDING_REVIEW'), (2, '王德发', 'PENDING_REVIEW')]
+curl -s "$B/assistances/1" -H "$BAUTH" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('留痕:', [(e['action'], e.get('actorName') or '系统') for e in d['events']])"
+#   → 留痕: [('CREATE', '吴凯'), ('AUTO_PENDING_REVIEW', '系统')]
+
+# ④ 管家逐条复核：王德发→确认完成；张桂英→继续关怀（处理人/时间留痕）
+curl -s -X POST "$B/assistances/2/review" -H "$BAUTH" -H "$CT" \
+  -d '{"action":"COMPLETE","note":"电梯已恢复，买菜临时帮扶结束"}'
+curl -s -X POST "$B/assistances/1/review" -H "$BAUTH" -H "$CT" \
+  -d '{"action":"CONTINUE","note":"透析为长期需求，恢复后仍需持续关怀"}'
+curl -s "$B/assistances/2" -H "$BAUTH" | python3 -c "
+import json,sys; a=json.load(sys.stdin)['assistance']
+print(a['residentName'], a['status'], '| 处理人:', a['reviewedBy'], '| 时间:', a['reviewedAt'])"
+#   → 王德发 RESOLVED | 处理人: 吴凯 | 时间: 2026-…
+curl -s "$B/assistances?status=CONTINUED" -H "$BAUTH" | grep -o '张桂英'          # 续办关怀列表
+
+# ⑤ 再次停梯：DT-3-2 新困人 2 起 → 新整改单 #2；张桂英（续办）自动纳入新批次；
+#    新登记就医帮扶只归入整改单 #2
+for i in 1 2; do
+  curl -s -X POST "$B/events" -H "$AUTH" -H "$CT" \
+    -d '{"elevatorId":6,"alarmSource":"IOT","passengerCount":2,"elderlyCount":1,"trappedFloor":"8 层","reportDetail":"再次困人"}' > /dev/null
+done
+curl -s -X POST "$B/elevators/6/rectification-plans" -H "$AUTH" -H "$CT" -d '{"requestNote":"再次反复困人，要求彻底整改"}'
+curl -s -X POST "$B/assistances" -H "$BAUTH" -H "$CT" \
+  -d '{"buildingId":3,"elevatorId":6,"residentName":"李奶奶","roomNo":"3 栋 0701","needDescription":"每周三上午就医复查，需协助上下楼","helperName":"物业客服小李","helperPhone":"13500000101"}'
+curl -s "$B/assistances/current-batches" -H "$AUTH" | python3 -c "
+import json,sys
+for b in json.load(sys.stdin):
+    print('整改单#', b['plan']['id'], '新需求:', [(r['residentName'], r['rectificationPlan']['id']) for r in b['newBatch']],
+          '续办转入:', [(r['residentName'], '原整改单#'+str(r['rectificationPlan']['id'])) for r in b['carried']])"
+#   → 整改单# 2 新需求: [('李奶奶', 2)] 续办转入: [('张桂英', '原整改单#1')]
+curl -s "$B/rectification-plans/2" -H "$AUTH" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('本批次登记:', [a['residentName'] for a in d['assistances']],
+      '| 续办转入:', [a['residentName'] for a in d['carriedAssistances']])"
+#   → 本批次登记: ['李奶奶'] | 续办转入: ['张桂英']
+
+# ⑥ 列表可区分三类：旧批次已结案 / 续办关怀 / 新停梯需求
+curl -s "$B/assistances" -H "$AUTH" | python3 -c "
+import json,sys
+for a in json.load(sys.stdin):
+    print(a['residentName'], a['status'], '整改单#'+str(a['rectificationPlan']['id']))"
+#   → 李奶奶 ACTIVE #2（新停梯需求）｜张桂英 CONTINUED #1（续办关怀）
+#     王德发 RESOLVED #1、刘淑芬 RESOLVED #1（旧批次已结案）
+
+# ⑦ 未恢复运行时一致性：整改单 #2 未复检通过 → 电梯停梯中、停梯公告有效、
+#    新批次帮扶与人力安排计入当前批次
+curl -s "$B/elevators/6" -H "$AUTH" | grep -o '"status":"STOPPED"'
+curl -s "$B/rectification-plans/2" -H "$AUTH" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('公告:', [(n['type'], n['status']) for n in d['notices']])"
+#   → 公告: [('STOP_NOTICE', 'PUBLISHED')]
+```
+
+> 注：无进行中整改单的电梯登记帮扶会被拒绝（`POST /api/assistances` 返回 400），保证帮扶永远挂在发起它的停梯批次上；帮扶复核（完成/续办/改约）仅管理员、物业值班员、本楼栋管家可操作，处理人与时间自动留痕（`GET /api/assistances/{id}` 可见完整时间线）。
+
 ## 测试账号（逐角色）
 
 | 用户名 | 密码 | 角色 | 权限/职责说明 |
@@ -151,8 +250,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PUT "$B/notices/<停梯公告id>/rev
 | `maint01` | `123456` | 维保人员（王强，安捷维保） | 查看事件与档案、到场/释放等处置协同 |
 | `maint02` | `123456` | 维保人员（赵鹏，恒升维保） | 同上 |
 | `sec01` | `123456` | 保安（刘建国） | 查看事件、接收通知 |
-| `butler01` | `123456` | 楼栋管家（陈静，1 栋） | 查看事件、发布楼栋公告、业主安抚 |
+| `butler01` | `123456` | 楼栋管家（陈静，1 栋） | 查看事件、发布楼栋公告、登记/复核本楼栋帮扶 |
 | `butler02` | `123456` | 楼栋管家（周婷，2 栋） | 同上 |
+| `butler03` | `123456` | 楼栋管家（吴凯，3 栋） | 同上（DT-3-2 帮扶复核演示账号） |
 | `fire01` | `123456` | 消防救援联络（周正） | 查看事件、消防到场登记协同 |
 | `owner01` | `123456` | 业主（王秀兰） | 查看公告与基础信息 |
 
@@ -197,7 +297,16 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PUT "$B/notices/<停梯公告id>/rev
 - **居民端只显示有效指引**：业主（OWNER）查询公告时仅返回当前有效（PUBLISHED）公告——停梯期间看到停梯指引，复检通过后只看到恢复运行公告，不会收到相反出行指引；管理角色可查看含已撤回的全部公告用于审计；
 - **恢复运行门禁**：当前有效版本未通过时电梯与停梯公告持续有效（事件复位、电梯档案编辑等旁路也被禁止恢复运行）；**只有最新版本复检通过**才允许恢复运行；
 - **停梯时长**：电梯进入停梯状态自动计时，恢复运行清零，故障汇总中实时展示；
-- **老人帮扶**：停梯期间可登记老人上下楼需求（就医、买菜等）与临时帮扶人员，帮扶中/已办结全程可跟踪，避免整改影响日常生活。
+- **老人帮扶（按整改单批次交接）**：见下方专节。
+
+### 老人帮扶按整改单批次交接（本轮修复）
+
+- **批次关联**：帮扶记录必须关联发起它的整改单（停梯批次，`rectificationPlanId`）——只有存在进行中整改单的停梯电梯才能登记帮扶，无批次登记直接 4xx；帮扶与当次停梯公告、复检记录同属一个整改单，可互相追溯；
+- **恢复联动**：最新版复检通过、电梯恢复运行的**同一事务**中，本批次未办结（帮扶中）的记录自动转入**待复核**，不再计入「停梯期间帮扶中」与其人力需求；留痕动作记为「系统」；
+- **管家复核**：管家（或值班员/管理员）对待复核记录逐条确认——**已完成**（办结）、**继续关怀**（转续办，电梯恢复后仍持续关怀）、**改约**（填写下次服务时间，本批次结案）；帮扶中/续办中的记录也可直接办结或改约。每次复核保留**处理人、处理时间、处理方式与备注**（记录字段 + 只增不改的留痕时间线）；
+- **下一批次只汇总新需求与续办**：同一电梯再次停梯（新整改单）时，「续办关怀」记录自动登记批次关联并纳入新批次的帮扶汇总与人力安排；已结案、待复核的旧记录均不计入。当前批次视图 = 本批次新登记需求 + 历史批次明确续办转入；
+- **未恢复时一致**：整改单未复检通过期间，电梯停梯状态、停梯公告、本批次帮扶（帮扶中）与人力安排保持一致，不会出现电梯已恢复但帮扶仍挂「帮扶中」的错位；
+- **互相追溯**：帮扶详情含完整处理留痕时间线（登记/恢复转待复核/复核/纳入新批次）与历次纳入的整改单；整改单详情同步列出本批次登记的帮扶与续办转入的关怀，并可下钻公告与复检记录。
 
 ## 演示数据说明
 
@@ -206,6 +315,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PUT "$B/notices/<停梯公告id>/rev
 - **历史事件（已关闭）**：含维保迟到、乘客索赔、反复故障、消防先到场、维保主张使用不当、设备老化等典型情形，均已走完责任判定与归档；
 - **进行中事件**：`EV当天-001`（待调度，含老人儿童）与 `EV当天-002`（已调度待到场），用于演示完整处置流程；
 - **停梯整改申请**：DT-3-2 近一周 2 起困人（E57 门锁回路故障）已发起整改申请（含触发事件/故障代码/投诉汇总快照），第 1 版方案已提交待复检；DT-2-1 近一周 3 起困人（E21 安全回路断开）尚未发起申请，可演示「申请 → 首版失败 → 修订通过」全流程；DT-1-1（0 起）/ DT-3-1（1 起）用于演示证据不足返回 4xx；
+- **停梯帮扶（关联 DT-3-2 整改单 #1）**：张桂英-透析（帮扶中）、王德发-买菜（帮扶中）、刘淑芬-取药（本批次已办结，含复核留痕），可直接演示「首版失败 → 修订通过 → 待复核 → 结案/续办 → 二次停梯新批次」全链路；
 - **配套数据**：维保合同 6 份、年检记录 6 条、配件更换 3 条、业主投诉 3 条、本周值班表、停梯/备用梯/老人协助公告 3 条、业主回访 2 条。
 
 ## 核心业务流程
@@ -244,7 +354,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X PUT "$B/notices/<停梯公告id>/rev
 │       ├── config/             # 安全配置、JWT 过滤器、全局异常、演示数据种子
 │       ├── controller/         # REST 接口（事件工作流 / 档案 / 投诉 / 值班 / 公告 / 用户 / 统计）
 │       ├── dto/                # 事件处置请求 DTO
-│       ├── entity/             # 15 个 JPA 实体（枚举内嵌）
+│       ├── entity/             # 21 个 JPA 实体（枚举内嵌）
 │       ├── repository/         # Spring Data JPA 仓库
 │       ├── security/           # JWT 工具、UserDetailsService、当前用户解析
 │       └── service/            # 事件工作流 EventService、统计 DashboardService

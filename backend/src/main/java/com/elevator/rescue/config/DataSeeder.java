@@ -41,6 +41,7 @@ public class DataSeeder implements CommandLineRunner {
     private final RectificationPlanRepository planRepo;
     private final RectificationPlanVersionRepository versionRepo;
     private final ElderlyAssistanceRepository assistanceRepo;
+    private final AssistanceEventRepository assistanceEventRepo;
     private final PasswordEncoder passwordEncoder;
     private final ObjectMapper objectMapper;
 
@@ -71,6 +72,7 @@ public class DataSeeder implements CommandLineRunner {
         User sec1 = user("sec01", "123456", "刘建国", "13500000006", User.Role.SECURITY, null, null);
         User butler1 = user("butler01", "123456", "陈静", "13800001101", User.Role.BUTLER, null, b1.getId());
         User butler2 = user("butler02", "123456", "周婷", "13800001102", User.Role.BUTLER, null, b2.getId());
+        User butler3 = user("butler03", "123456", "吴凯", "13800001103", User.Role.BUTLER, null, b3.getId());
         User fire1 = user("fire01", "123456", "周正", "13500000009", User.Role.FIRE, null, null);
         user("owner01", "123456", "王秀兰", "13600000010", User.Role.OWNER, null, b1.getId());
 
@@ -345,10 +347,10 @@ public class DataSeeder implements CommandLineRunner {
         stopNotice.setPublishedAt(plan.getRequestedAt());
         noticeRepo.save(stopNotice);
 
-        // ---------- 停梯期间老人帮扶登记 ----------
-        assistance(b3, e32, "张桂英", "3 栋 1502", "13611110001", "每周二、五上午去医院透析，需协助上下楼", "物业客服小李", "13500000101", true);
-        assistance(b3, e32, "王德发", "3 栋 0901", "13611110002", "每日买菜需协助搬运上楼", "保安刘建国", "13500000006", true);
-        assistance(b3, e32, "刘淑芬", "3 栋 1103", "13611110003", "临时下楼取药一次", "楼栋管家吴凯", "13800001103", false);
+        // ---------- 停梯期间老人帮扶登记（关联 DT-3-2 本整改单批次，含处理留痕） ----------
+        assistance(b3, e32, plan, "张桂英", "3 栋 1502", "13611110001", "每周二、五上午去医院透析，需协助上下楼", "物业客服小李", "13500000101", true, butler3);
+        assistance(b3, e32, plan, "王德发", "3 栋 0901", "13611110002", "每日买菜需协助搬运上楼", "保安刘建国", "13500000006", true, butler3);
+        assistance(b3, e32, plan, "刘淑芬", "3 栋 1103", "13611110003", "临时下楼取药一次", "楼栋管家吴凯", "13800001103", false, butler3);
 
         // ---------- 业主投诉 ----------
         complaint(e21, ev2.getId(), "王秀兰", "13600000010", b2.getName(),
@@ -674,21 +676,49 @@ public class DataSeeder implements CommandLineRunner {
         followupRepo.save(f);
     }
 
-    private void assistance(Building building, Elevator elevator, String residentName, String roomNo,
-                            String phone, String need, String helperName, String helperPhone, boolean active) {
+    private void assistance(Building building, Elevator elevator, RectificationPlan plan, String residentName,
+                            String roomNo, String phone, String need, String helperName, String helperPhone,
+                            boolean active, User creator) {
         ElderlyAssistance a = new ElderlyAssistance();
         a.setBuilding(building);
         a.setElevator(elevator);
+        a.setRectificationPlan(plan);
         a.setResidentName(residentName);
         a.setRoomNo(roomNo);
         a.setPhone(phone);
         a.setNeedDescription(need);
         a.setHelperName(helperName);
         a.setHelperPhone(helperPhone);
+        a.setCreatedByName(creator.getRealName());
         a.setStatus(active ? ElderlyAssistance.AssistanceStatus.ACTIVE : ElderlyAssistance.AssistanceStatus.RESOLVED);
         if (!active) {
             a.setResolvedAt(LocalDateTime.now().minusHours(6));
+            a.setReviewedBy(creator.getRealName());
+            a.setReviewedAt(a.getResolvedAt());
+            a.setReviewAction(ElderlyAssistance.ReviewAction.COMPLETE);
+            a.setReviewNote("临时需求已服务完成，本批次结案");
         }
         assistanceRepo.save(a);
+        assistanceEvent(a, creator.getRealName(), AssistanceEvent.Action.CREATE, null,
+                ElderlyAssistance.AssistanceStatus.ACTIVE,
+                "停梯期间登记帮扶，归入整改单 #" + plan.getId() + "（" + elevator.getCode() + " 本批次）");
+        if (!active) {
+            assistanceEvent(a, creator.getRealName(), AssistanceEvent.Action.COMPLETE,
+                    ElderlyAssistance.AssistanceStatus.ACTIVE, ElderlyAssistance.AssistanceStatus.RESOLVED,
+                    "临时需求已服务完成，本批次结案");
+        }
+    }
+
+    private void assistanceEvent(ElderlyAssistance a, String actorName, AssistanceEvent.Action action,
+                                 ElderlyAssistance.AssistanceStatus from,
+                                 ElderlyAssistance.AssistanceStatus to, String note) {
+        AssistanceEvent event = new AssistanceEvent();
+        event.setAssistance(a);
+        event.setActorName(actorName);
+        event.setAction(action);
+        event.setFromStatus(from);
+        event.setToStatus(to);
+        event.setNote(note);
+        assistanceEventRepo.save(event);
     }
 }
